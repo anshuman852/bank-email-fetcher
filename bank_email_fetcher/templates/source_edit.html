@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Edit Source - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Edit Source</h2>
+</div>
+
+<section>
+    <article class="card">
+        <form method="post" action="/sources/{{ source.id }}/edit">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                <label data-field>
+                    Connection Label
+                    <input type="text" name="label" value="{{ source.label }}" required>
+                </label>
+                <label data-field>
+                    Provider
+                    <input type="hidden" name="provider" value="{{ source.provider }}">
+                    <select disabled>
+                        <option value="gmail" {% if source.provider == "gmail" %}selected{% endif %}>Gmail</option>
+                        <option value="fastmail" {% if source.provider == "fastmail" %}selected{% endif %}>Fastmail</option>
+                    </select>
+                </label>
+                <label data-field>
+                    Email Address
+                    <input type="email" name="account_identifier" value="{{ source.account_identifier or '' }}" placeholder="user@example.com">
+                </label>
+                <label data-field>
+                    App Password / Token
+                    <div style="display:flex;gap:0.5rem;">
+                        <input type="password" name="credential_value" id="cred-input" placeholder="Leave blank to keep current" style="flex:1;">
+                        <button type="button" class="small" onclick="document.getElementById('cred-input').type = document.getElementById('cred-input').type === 'password' ? 'text' : 'password'">Show</button>
+                    </div>
+                    <small class="text-sm text-muted">Gmail: App Password. Fastmail: API Token.</small>
+                </label>
+                <label data-field style="flex-direction: row; gap: 0.5rem; align-items: center;">
+                    <input type="checkbox" name="active" value="true" {% if source.active %}checked{% endif %} style="width: auto; margin: 0;">
+                    Active
+                </label>
+            </div>
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                <button type="submit">Save</button>
+                <a href="/sources"><button type="button" data-variant="secondary">Cancel</button></a>
+            </div>
+        </form>
+    </article>
+</section>
+{% endblock %}

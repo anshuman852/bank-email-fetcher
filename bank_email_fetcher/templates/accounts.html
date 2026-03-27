@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Accounts - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Accounts</h2>
+    <span class="result-count">{{ accounts|length }} account{{ "s" if accounts|length != 1 }}</span>
+</div>
+
+<section>
+    <article class="card" style="margin-bottom: 1.5rem;">
+        <h3 style="margin-top: 0; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6;">Add Account</h3>
+        <form method="post" action="/accounts">
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;">
+                <label data-field style="flex: 1; min-width: 160px; margin-block-end: 0;">
+                    Bank
+                    <input type="text" name="bank" list="bank-list" required placeholder="e.g. HDFC">
+                    <datalist id="bank-list">
+                        {% for b in banks %}
+                        <option value="{{ b }}">
+                        {% endfor %}
+                    </datalist>
+                </label>
+                <label data-field style="flex: 1; min-width: 140px; margin-block-end: 0;">
+                    Label
+                    <input type="text" name="label" required placeholder="e.g. Primary Savings">
+                </label>
+                <label data-field style="flex: 1; min-width: 140px; margin-block-end: 0;">
+                    Type
+                    <select name="type" required>
+                        <option value="bank_account">Bank Account</option>
+                        <option value="credit_card">Credit Card</option>
+                        <option value="debit_card">Debit Card</option>
+                    </select>
+                </label>
+                <label data-field style="flex: 1; min-width: 160px; margin-block-end: 0;">
+                    Account Number
+                    <input type="text" name="account_number" placeholder="Optional">
+                </label>
+                <button type="submit" style="margin-block-end: 0;">Add</button>
+            </div>
+        </form>
+    </article>
+</section>
+
+<section>
+{% if accounts %}
+<figure style="margin: 0;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Bank</th>
+                    <th>Label</th>
+                    <th>Type</th>
+                    <th>Account Number</th>
+                    <th>Status</th>
+                    <th style="text-align: right;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for acc in accounts %}
+                <tr>
+                    <td><span class="badge">{{ acc.bank }}</span></td>
+                    <td><strong>{{ acc.label }}</strong></td>
+                    <td class="text-sm">
+                        {% if acc.type == 'bank_account' %}Bank Account
+                        {% elif acc.type == 'credit_card' %}Credit Card
+                        {% elif acc.type == 'debit_card' %}Debit Card
+                        {% else %}{{ acc.type }}{% endif %}
+                    </td>
+                    <td class="text-sm text-muted" style="font-family: var(--font-mono);">{{ acc.account_number or "&mdash;"|safe }}</td>
+                    <td>
+                        {% if acc.active %}
+                        <span class="badge success">active</span>
+                        {% else %}
+                        <span class="badge">inactive</span>
+                        {% endif %}
+                    </td>
+                    <td style="white-space: nowrap; text-align: right;">
+                        <a href="/accounts/{{ acc.id }}/edit" class="text-sm">Edit</a>
+                        <span class="text-muted" style="margin: 0 0.3rem;">&middot;</span>
+                        <form method="post" action="/accounts/{{ acc.id }}/delete" style="display: inline;" onsubmit="return confirm('Delete this account? Linked transactions will be unlinked.');">
+                            <button type="submit" style="background:none;border:none;padding:0;color:var(--danger);cursor:pointer;font:inherit;" class="text-sm">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% else %}
+<article class="card empty-state">
+    <p>No accounts configured yet.</p>
+    <p class="text-sm text-muted">Add an account above. Matching transactions will be auto-linked by bank name and account number.</p>
+</article>
+{% endif %}
+</section>
+{% endblock %}

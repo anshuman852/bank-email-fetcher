@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Dashboard</h2>
+    <form method="post" action="/poll" id="poll-form">
+        <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+            <span
+                id="poll-status-badge"
+                class="badge {% if poll_status.state == 'polling' %}badge-pending{% else %}success{% endif %}"
+            >
+                {{ "polling" if poll_status.state == "polling" else "idle" }}
+            </span>
+            <span id="poll-status-meta" class="text-sm text-muted">
+                {% if poll_status.started_at and poll_status.state == "polling" %}
+                Poll started {{ poll_status.started_at }}
+                {% elif poll_status.finished_at %}
+                Last poll finished {{ poll_status.finished_at }}
+                {% else %}
+                No poll has run yet.
+                {% endif %}
+            </span>
+            <button
+                type="submit"
+                id="poll-button"
+                {% if poll_status.state == "polling" %}disabled{% endif %}
+            >
+                {{ "Polling..." if poll_status.state == "polling" else "Poll Now" }}
+            </button>
+        </div>
+    </form>
+</div>
+
+<section class="stats-grid">
+    <article class="card stat-card" style="text-align: left;">
+        <dl>
+            <dt>Debits</dt>
+            <dd class="amt amt-debit" style="font-size: 1.35rem;">&minus;{{ stats.month_debit|inr_compact }}</dd>
+            <dd class="text-sm text-muted" style="margin-top: 0.15rem;">{{ stats.period_label }}</dd>
+        </dl>
+    </article>
+    <article class="card stat-card" style="text-align: left;">
+        <dl>
+            <dt>Credits</dt>
+            <dd class="amt amt-credit" style="font-size: 1.35rem;">+{{ stats.month_credit|inr_compact }}</dd>
+            <dd class="text-sm text-muted" style="margin-top: 0.15rem;">{{ stats.period_label }}</dd>
+        </dl>
+    </article>
+    <article class="card stat-card" style="text-align: left;">
+        <dl>
+            <dt>Transactions</dt>
+            <dd style="font-size: 1.35rem;">{{ "{:,}".format(stats.month_transactions) }}</dd>
+            <dd class="text-sm text-muted" style="margin-top: 0.15rem;">{{ stats.period_label }}</dd>
+        </dl>
+    </article>
+    <article class="card stat-card" style="text-align: left;">
+        <dl>
+            <dt>Net Flow</dt>
+            <dd class="amt {% if stats.net_flow >= 0 %}amt-credit{% else %}amt-debit{% endif %}" style="font-size: 1.35rem;">{% if stats.net_flow >= 0 %}+{% else %}&minus;{% endif %}{{ stats.net_flow|abs|inr_compact }}</dd>
+            <dd class="text-sm text-muted" style="margin-top: 0.15rem;">{{ stats.period_label }}</dd>
+        </dl>
+    </article>
+</section>
+<p class="text-sm text-muted" style="margin-top: 0.25rem;">{{ ops_stats.total_emails }} emails processed &middot; {{ ops_stats.active_rules }} active rules</p>
+
+<section>
+    <h3 style="font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 0.75rem;">Recent Transactions</h3>
+    {% if transactions %}
+    <figure style="margin: 0;">
+        <div class="table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Bank</th>
+                        <th>Direction</th>
+                        <th>Amount</th>
+                        <th>Counterparty</th>
+                        <th>Card / Account</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for txn in transactions %}
+                    <tr onclick="openDetailModal('/transactions/{{ txn.id }}/detail')" style="cursor: pointer;">
+                        <td class="text-sm">{{ txn.transaction_date.strftime("%d %b %Y") if txn.transaction_date else "&mdash;"|safe }}</td>
+                        <td><span class="badge">{{ txn.bank }}</span></td>
+                        <td>
+                            {% if txn.direction == "debit" %}
+                            <span class="badge danger">debit</span>
+                            {% else %}
+                            <span class="badge success">credit</span>
+                            {% endif %}
+                        </td>
+                        <td class="amt {% if txn.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ "{:,.2f}".format(txn.amount) }}</td>
+                        <td class="cell-counterparty">
+                            {{ txn.counterparty or "&mdash;"|safe }}
+                            {% if txn.channel %}<small>{{ txn.channel }}</small>{% endif %}
+                        </td>
+                        <td class="text-sm text-muted">{% if txn.account %}<a href="/accounts/{{ txn.account.id }}/edit" onclick="event.stopPropagation();">{{ txn.account.label }}</a>{% else %}{{ txn.card_mask or txn.account_mask or "&mdash;"|safe }}{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </figure>
+    <p class="text-sm text-muted" style="margin-top: 0.75rem;">
+        Showing {{ transactions|length }} most recent &middot;
+        <a href="/transactions">View all &rarr;</a>
+    </p>
+    {% else %}
+    <article class="card empty-state">
+        <p>No transactions yet.</p>
+        <p class="text-sm text-muted">Add fetch rules and trigger a poll to start fetching emails.</p>
+    </article>
+    {% endif %}
+</section>
+
+<script>
+    (() => {
+        const badge = document.getElementById("poll-status-badge");
+        const meta = document.getElementById("poll-status-meta");
+        const button = document.getElementById("poll-button");
+        if (!badge || !meta || !button) {
+            return;
+        }
+
+        const formatTimestamp = (value) => {
+            if (!value) {
+                return "";
+            }
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) {
+                return value;
+            }
+            return date.toLocaleString();
+        };
+
+        const renderStatus = (status) => {
+            const polling = status.state === "polling";
+            badge.textContent = polling ? "polling" : "idle";
+            badge.classList.toggle("badge-pending", polling);
+            badge.classList.toggle("success", !polling);
+            button.disabled = polling;
+            button.textContent = polling ? "Polling..." : "Poll Now";
+
+            if (polling && status.progress) {
+                const p = status.progress;
+                meta.textContent = `Rule ${p.rule} · ${p.source} · Email ${p.email}`;
+                return;
+            }
+            if (polling && status.started_at) {
+                meta.textContent = `Poll started ${formatTimestamp(status.started_at)}`;
+                return;
+            }
+            if (status.finished_at) {
+                meta.textContent = `Last poll finished ${formatTimestamp(status.finished_at)}`;
+                return;
+            }
+            meta.textContent = "No poll has run yet.";
+        };
+
+        const refreshStatus = async () => {
+            try {
+                const response = await fetch("/api/poll/status", { cache: "no-store" });
+                if (!response.ok) {
+                    return;
+                }
+                const status = await response.json();
+                renderStatus(status);
+            } catch (error) {
+                console.debug("Failed to refresh poll status", error);
+            }
+        };
+
+        renderStatus({{ poll_status | tojson }});
+        window.setInterval(refreshStatus, 3000);
+    })();
+</script>
+
+{% endblock %}

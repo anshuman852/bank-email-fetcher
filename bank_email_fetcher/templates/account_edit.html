@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Edit Account - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Edit Account</h2>
+</div>
+
+<section>
+    <article class="card">
+        <form method="post" action="/accounts/{{ account.id }}/edit">
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;">
+                <label data-field style="min-width: 160px;">
+                    Bank
+                    <input type="text" name="bank" list="bank-list" required value="{{ account.bank }}">
+                    <datalist id="bank-list">
+                        {% for b in banks %}
+                        <option value="{{ b }}">
+                        {% endfor %}
+                    </datalist>
+                </label>
+                <label data-field style="min-width: 140px;">
+                    Label
+                    <input type="text" name="label" required value="{{ account.label }}">
+                </label>
+                <label data-field style="min-width: 140px;">
+                    Type
+                    <select name="type" required>
+                        <option value="bank_account" {% if account.type == "bank_account" %}selected{% endif %}>Bank Account</option>
+                        <option value="credit_card" {% if account.type == "credit_card" %}selected{% endif %}>Credit Card</option>
+                        <option value="debit_card" {% if account.type == "debit_card" %}selected{% endif %}>Debit Card</option>
+                    </select>
+                </label>
+                <label data-field style="min-width: 160px;">
+                    Account Number
+                    <input type="text" name="account_number" value="{{ account.account_number or '' }}" placeholder="Optional">
+                </label>
+                {% if account.type == "credit_card" %}
+                <label data-field style="min-width: 180px;">
+                    Statement Password
+                    <input type="password" name="statement_password" value="{{ statement_password_plain or '' }}" placeholder="For encrypted PDFs" autocomplete="off">
+                </label>
+                {% endif %}
+            </div>
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                <button type="submit">Save</button>
+                <a href="/accounts"><button type="button" data-variant="secondary">Cancel</button></a>
+            </div>
+        </form>
+    </article>
+</section>
+
+<style>
+    .cards-item {
+        border: 1px solid var(--border-light);
+        border-radius: 14px;
+        padding: 0.9rem;
+        background: var(--surface-muted);
+        display: grid;
+        gap: 0.75rem;
+    }
+    .cards-item.primary { box-shadow: inset 3px 0 0 var(--clr-credit); }
+    .cards-fields { display: grid; gap: 0.75rem; }
+    .cards-actions {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 0.75rem; flex-wrap: wrap;
+    }
+    .cards-delete { margin: 0; }
+    .cards-delete summary { cursor: pointer; list-style: none; }
+    .cards-delete summary::-webkit-details-marker { display: none; }
+    .cards-delete-panel {
+        margin-top: 0.65rem; padding-top: 0.65rem;
+        border-top: 1px solid var(--border-light);
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 0.75rem; flex-wrap: wrap;
+    }
+    @media (min-width: 760px) {
+        .cards-fields { grid-template-columns: minmax(0, 1.5fr) auto; align-items: end; }
+        .cards-add-form { grid-template-columns: minmax(8rem, 10rem) minmax(0, 1.4fr) auto auto; align-items: end; }
+    }
+</style>
+
+<section>
+<article class="card" style="margin-top: 1rem; display: grid; gap: 0.9rem;">
+    <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;">
+        <div>
+            <strong>Cards</strong>
+            <div class="text-sm text-muted">Manage cards linked to this account</div>
+        </div>
+        <span class="text-sm text-muted">{{ account.cards|length }} total</span>
+    </div>
+
+    {% if account.cards %}
+    <div style="display: grid; gap: 0.75rem;">
+        {% for card in account.cards %}
+        <div class="cards-item{% if card.is_primary %} primary{% endif %}">
+            <form method="post" action="/accounts/{{ account.id }}/cards/{{ card.id }}/edit" style="display: grid; gap: 0.75rem;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;">
+                    <div>
+                        <span style="font-family: var(--font-mono); font-size: 1rem; letter-spacing: 0.08em;">&bull;&bull;&bull;&bull; {{ card.card_mask }}</span>
+                        <div style="margin-top: 0.4rem; display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                            {% if card.is_primary %}<span class="badge success">primary</span>{% endif %}
+                            {% if not card.active %}<span class="badge danger">inactive</span>{% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="cards-fields">
+                    <label data-field>
+                        Label
+                        <input type="text" name="label" value="{{ card.label }}" placeholder="self, spouse, mom" maxlength="40" required>
+                    </label>
+                    <label style="display: inline-flex; align-items: center; gap: 0.55rem; min-height: 2.5rem;">
+                        <input type="checkbox" name="is_primary" value="1" {% if card.is_primary %}checked{% endif %}>
+                        <span class="text-sm">Primary card</span>
+                    </label>
+                </div>
+
+                <div class="cards-actions">
+                    <details class="cards-delete">
+                        <summary class="text-sm text-muted">Remove card</summary>
+                        <div class="cards-delete-panel">
+                            <span class="text-sm text-muted">Delete card ending in {{ card.card_mask }}?</span>
+                            <form method="post" action="/accounts/{{ account.id }}/cards/{{ card.id }}/delete">
+                                <button type="submit" style="color: var(--clr-debit);">Confirm delete</button>
+                            </form>
+                        </div>
+                    </details>
+                    <button type="submit">Save</button>
+                </div>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="cards-item">
+        <p class="text-sm text-muted" style="margin: 0;">No cards linked yet. Add the first card below.</p>
+    </div>
+    {% endif %}
+
+    <div style="border-top: 1px solid var(--border-light); padding-top: 0.9rem;">
+        <form method="post" action="/accounts/{{ account.id }}/cards" class="cards-add-form" style="display: grid; gap: 0.75rem;">
+            <label data-field>
+                Last 4 digits
+                <input type="text" name="card_mask" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1234" required style="font-family: var(--font-mono);">
+            </label>
+            <label data-field>
+                Label
+                <input type="text" name="label" placeholder="self, spouse, mom" maxlength="40" required>
+            </label>
+            <label style="display: inline-flex; align-items: center; gap: 0.55rem; min-height: 2.5rem;">
+                <input type="checkbox" name="is_primary" value="1">
+                <span class="text-sm">Set as primary</span>
+            </label>
+            <button type="submit">Add card</button>
+        </form>
+    </div>
+</article>
+</section>
+{% endblock %}

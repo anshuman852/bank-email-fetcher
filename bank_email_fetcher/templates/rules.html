@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Fetch Rules - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Fetch Rules</h2>
+    <span class="result-count">{{ rules|length }} rule{{ "s" if rules|length != 1 }}</span>
+</div>
+
+<section>
+    <article class="card" style="margin-bottom: 1.5rem;">
+        <h3 style="margin-top: 0; font-size: 1rem;">Add Rule</h3>
+        <form method="post" action="/rules">
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;">
+                <label data-field style="min-width: 180px;">
+                    Email Source
+                    <select name="source_id" required>
+                        <option value="">Select source...</option>
+                        {% for s in sources %}
+                        <option value="{{ s.id }}">{{ s.label }} ({{ s.account_identifier or s.provider }})</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label data-field style="min-width: 140px;">
+                    Bank
+                    <select name="bank" required>
+                        {% for b in supported_banks %}
+                        <option value="{{ b }}">{{ b }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label data-field style="min-width: 180px;">
+                    Sender filter
+                    <input type="text" name="sender" placeholder="e.g. alerts@icicibank.com">
+                </label>
+                <label data-field style="min-width: 180px;">
+                    Subject filter
+                    <input type="text" name="subject" placeholder="e.g. Transaction Alert">
+                </label>
+                <label data-field style="min-width: 140px;">
+                    Folder
+                    <input type="text" name="folder" placeholder="Optional">
+                </label>
+                <button type="submit">Add</button>
+            </div>
+        </form>
+    </article>
+</section>
+
+<section>
+{% if rules %}
+<figure style="margin: 0;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Source</th>
+                    <th>Bank</th>
+                    <th>Sender</th>
+                    <th>Subject</th>
+                    <th>Folder</th>
+                    <th>Status</th>
+                    <th style="text-align: right;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rule in rules %}
+                <tr>
+                    <td><span class="badge">{{ rule.source.label if rule.source else rule.provider }}</span></td>
+                    <td><span class="badge">{{ rule.bank }}</span></td>
+                    <td class="text-sm"><code>{{ rule.sender or "&mdash;"|safe }}</code></td>
+                    <td class="text-sm">{{ rule.subject or "&mdash;"|safe }}</td>
+                    <td class="text-sm">{{ rule.folder or "&mdash;"|safe }}</td>
+                    <td>
+                        <form method="post" action="/rules/{{ rule.id }}/toggle" style="display: inline;">
+                            {% if rule.enabled %}
+                            <button type="submit" style="background:none;border:none;padding:0;color:var(--success);cursor:pointer;font:inherit;" class="text-sm">enabled</button>
+                            {% else %}
+                            <button type="submit" style="background:none;border:none;padding:0;color:var(--danger);cursor:pointer;font:inherit;" class="text-sm">disabled</button>
+                            {% endif %}
+                        </form>
+                    </td>
+                    <td style="white-space: nowrap; text-align: right;">
+                        <a href="/rules/{{ rule.id }}/edit" class="text-sm">Edit</a>
+                        <span class="text-muted" style="margin: 0 0.3rem;">&middot;</span>
+                        <form method="post" action="/rules/{{ rule.id }}/delete" style="display: inline;" onsubmit="return confirm('Delete this fetch rule?');">
+                            <button type="submit" style="background:none;border:none;padding:0;color:var(--danger);cursor:pointer;font:inherit;" class="text-sm">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% else %}
+<article class="card empty-state">
+    <p>No fetch rules configured yet.</p>
+    <p class="text-sm text-muted">Rules tell the fetcher which emails to look for and which bank parser to use.</p>
+</article>
+{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Email Sources - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Email Sources</h2>
+    <span class="result-count">{{ sources|length }} source{{ "s" if sources|length != 1 }}</span>
+</div>
+
+<section>
+    <article class="card" style="margin-bottom: 1.5rem;">
+        <h3 style="margin-top: 0; font-size: 1rem;">Add Source</h3>
+        <form method="post" action="/sources">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                <label data-field>
+                    Connection Label
+                    <input type="text" name="label" placeholder="e.g. Personal Gmail" required>
+                </label>
+                <label data-field>
+                    Provider
+                    <select name="provider">
+                        <option value="gmail">Gmail</option>
+                        <option value="fastmail">Fastmail</option>
+                    </select>
+                </label>
+                <label data-field>
+                    Email Address
+                    <input type="email" name="account_identifier" placeholder="user@example.com">
+                </label>
+                <label data-field>
+                    App Password / Token
+                    <div style="display:flex;gap:0.5rem;">
+                        <input type="password" name="credential_value" id="cred-input" required style="flex:1;">
+                        <button type="button" class="small" onclick="document.getElementById('cred-input').type = document.getElementById('cred-input').type === 'password' ? 'text' : 'password'">Show</button>
+                    </div>
+                    <small class="text-sm text-muted">Gmail: App Password. Fastmail: API Token.</small>
+                </label>
+            </div>
+            <div style="margin-top: 1rem;">
+                <button type="submit">Add Source</button>
+            </div>
+        </form>
+    </article>
+</section>
+
+<section>
+{% if sources %}
+<figure style="margin: 0;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Provider</th>
+                    <th>Account</th>
+                    <th>Status</th>
+                    <th>Last Synced</th>
+                    <th style="text-align: right;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for src in sources %}
+                <tr>
+                    <td><strong>{{ src.label }}</strong></td>
+                    <td><span class="badge">{{ src.provider }}</span></td>
+                    <td class="text-sm text-muted">{{ src.account_identifier or "&mdash;"|safe }}</td>
+                    <td>
+                        {% if src.active %}
+                        <span class="badge success">active</span>
+                        {% else %}
+                        <span class="badge">inactive</span>
+                        {% endif %}
+                        {% if src.last_error %}
+                        <span class="badge danger" title="{{ src.last_error }}">error</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-sm">
+                        {% if src.last_synced_at %}
+                        {{ src.last_synced_at.strftime('%d %b %Y %H:%M') }}
+                        {% else %}
+                        <span class="text-muted">Never</span>
+                        {% endif %}
+                    </td>
+                    <td style="white-space: nowrap; text-align: right;">
+                        <a href="/sources/{{ src.id }}/edit" class="text-sm">Edit</a>
+                        <span class="text-muted" style="margin: 0 0.3rem;">&middot;</span>
+                        <a href="#" class="text-sm" onclick="testSource({{ src.id }}, this); return false;">Test</a>
+                        <span class="text-muted" style="margin: 0 0.3rem;">&middot;</span>
+                        <form method="post" action="/sources/{{ src.id }}/delete" style="display: inline;" onsubmit="return confirm('Delete this source?');">
+                            <button type="submit" style="background:none;border:none;padding:0;color:var(--danger);cursor:pointer;font:inherit;" class="text-sm">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% else %}
+<article class="card empty-state">
+    <p>No email sources configured yet.</p>
+    <p class="text-sm text-muted">Add an email source above to connect a Gmail or Fastmail account for fetching transaction emails.</p>
+</article>
+{% endif %}
+</section>
+
+<script>
+async function testSource(id, el) {
+    const orig = el.textContent;
+    el.textContent = "Testing…";
+    el.style.pointerEvents = "none";
+    try {
+        const resp = await fetch(`/api/sources/${id}/test`, { method: "POST" });
+        const data = await resp.json();
+        if (data.ok) {
+            el.textContent = "OK!";
+            el.style.color = "var(--success)";
+        } else {
+            el.textContent = "Failed";
+            el.style.color = "var(--danger)";
+            el.title = data.error || "Unknown error";
+        }
+    } catch (e) {
+        el.textContent = "Error";
+        el.style.color = "var(--danger)";
+    }
+    setTimeout(() => {
+        el.textContent = orig;
+        el.style.color = "";
+        el.style.pointerEvents = "";
+        el.title = "";
+    }, 3000);
+}
+</script>
+{% endblock %}

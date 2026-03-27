@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Emails - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Email Processing Log</h2>
+    <span class="result-count">{{ emails|length }} email{{ "s" if emails|length != 1 }}</span>
+</div>
+
+<section>
+{% if emails %}
+<figure style="margin: 0;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Provider</th>
+                    <th>Sender</th>
+                    <th>Subject</th>
+                    <th>Status</th>
+                    <th>Received</th>
+                    <th>Fetched</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for em in emails %}
+                <tr onclick="openDetailModal('/emails/{{ em.id }}/detail')" style="cursor: pointer;">
+                    <td class="text-sm text-muted" style="font-family: var(--font-mono);">{{ em.id }}</td>
+                    <td><span class="badge">{{ em.provider }}</span></td>
+                    <td class="text-sm"><span class="truncate" title="{{ em.sender or '' }}">{{ em.sender or "&mdash;"|safe }}</span></td>
+                    <td><span class="truncate" title="{{ em.subject or '' }}">{{ em.subject or "&mdash;"|safe }}</span></td>
+                    <td>
+                        {% if em.status == "parsed" %}
+                        <span class="badge success">parsed</span>
+                        {% elif em.status == "failed" %}
+                        <span class="badge danger" title="{{ em.error or '' }}">failed</span>
+                        {% elif em.status == "pending" %}
+                        <span class="badge badge-pending">pending</span>
+                        {% elif em.status == "skipped" %}
+                        <span class="badge">skipped</span>
+                        {% else %}
+                        <span class="badge">{{ em.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-sm">{{ em.received_at.strftime("%d %b %Y %H:%M") if em.received_at else "&mdash;"|safe }}</td>
+                    <td class="text-sm">{{ em.fetched_at.strftime("%d %b %Y %H:%M") if em.fetched_at else "&mdash;"|safe }}</td>
+                    <td onclick="event.stopPropagation()">
+                        {% if em.status == "failed" %}
+                        <button
+                            class="small"
+                            data-variant="secondary"
+                            onclick="reparseEmail(this, {{ em.id }})"
+                        >Reparse</button>
+                        {% else %}
+                        <span class="text-muted">&mdash;</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% else %}
+<article class="card empty-state">
+    <p>No emails fetched yet.</p>
+    <p class="text-sm text-muted">Configure fetch rules and trigger a poll to start processing.</p>
+</article>
+{% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function reparseEmail(btn, emailId) {
+    btn.disabled = true;
+    btn.textContent = 'Reparsing…';
+    try {
+        const resp = await fetch(`/emails/${emailId}/reparse`, { method: 'POST' });
+        const data = await resp.json();
+        const row = btn.closest('tr');
+        if (data.ok) {
+            // Update status badge in this row
+            const statusCell = row.querySelector('td:nth-child(5)');
+            if (statusCell) {
+                statusCell.innerHTML = '<span class="badge success">parsed</span>';
+            }
+            // Replace actions cell with a dash
+            const actionsCell = btn.closest('td');
+            if (actionsCell) {
+                actionsCell.innerHTML = '<span class="text-muted">&mdash;</span>';
+            }
+        } else {
+            btn.disabled = false;
+            btn.textContent = 'Reparse';
+            alert('Reparse failed: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Reparse';
+        alert('Request failed: ' + e);
+    }
+}
+</script>
+{% endblock %}

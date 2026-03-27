@@ -1,0 +1,124 @@
+<style>
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem 1.5rem; }
+    .detail-grid dt { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.45; margin-bottom: 0; }
+    .detail-grid dd { margin: 0 0 0.6rem 0; font-size: 0.9rem; }
+    .detail-grid dd:empty::after { content: "\2014"; opacity: 0.35; }
+    .detail-title { font-size: 1.05rem; font-weight: 700; margin: 0 0 0.75rem 0; letter-spacing: -0.02em; }
+    .note-area { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 0.88rem; padding: 0.5rem 0.65rem; border: 1px solid var(--border-light); border-radius: 6px; background: var(--surface-muted); resize: vertical; }
+    .note-status { font-size: 0.75rem; opacity: 0.5; margin-top: 0.25rem; min-height: 1.1em; }
+</style>
+
+<h3 class="detail-title">Transaction #{{ txn.id }}</h3>
+
+<dl class="detail-grid">
+    <div>
+        <dt>Date</dt>
+        <dd>{{ txn.transaction_date.strftime("%d %b %Y") if txn.transaction_date else "" }}</dd>
+    </div>
+    <div>
+        <dt>Bank</dt>
+        <dd><span class="badge">{{ txn.bank }}</span></dd>
+    </div>
+    <div>
+        <dt>Direction</dt>
+        <dd>
+            {% if txn.direction == "debit" %}
+            <span class="badge danger">debit</span>
+            {% else %}
+            <span class="badge success">credit</span>
+            {% endif %}
+        </dd>
+    </div>
+    <div>
+        <dt>Amount</dt>
+        <dd class="amt {% if txn.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}" style="font-size: 1.1rem;">
+            {% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ "{:,.2f}".format(txn.amount) }}
+        </dd>
+    </div>
+    <div>
+        <dt>Counterparty</dt>
+        <dd>{{ txn.counterparty or "" }}</dd>
+    </div>
+    <div>
+        <dt>Channel</dt>
+        <dd>{{ txn.channel or "" }}</dd>
+    </div>
+    <div>
+        <dt>Card / Account</dt>
+        <dd>{% if account %}<a href="/accounts/{{ account.id }}/edit">{{ account.label }}</a>{% endif %}{% if txn.card_mask or txn.account_mask %}<small class="text-muted" style="display: block;">{{ txn.card_mask or txn.account_mask }}</small>{% endif %}</dd>
+    </div>
+    <div>
+        <dt>Reference Number</dt>
+        <dd style="font-family: var(--font-mono); font-size: 0.85rem;">{{ txn.reference_number or "" }}</dd>
+    </div>
+    <div style="grid-column: 1 / -1;">
+        <dt>Raw Description</dt>
+        <dd style="white-space: pre-wrap; word-break: break-word;">{{ txn.raw_description or "" }}</dd>
+    </div>
+    <div>
+        <dt>Email Type</dt>
+        <dd><span class="badge">{{ txn.email_type }}</span></dd>
+    </div>
+    {% if account and account.type == "credit_card" and txn.card %}
+    <div>
+        <dt>Card</dt>
+        <dd class="text-sm">{{ txn.card.label or txn.card.card_mask }}{% if txn.card.label and not txn.card.is_primary %} (addon){% endif %}</dd>
+    </div>
+    {% endif %}
+    {% if email %}
+    <div>
+        <dt>Linked Email</dt>
+        <dd class="text-sm"><a href="#" onclick="openDetailModal('/emails/{{ email.id }}/detail'); return false;" style="cursor: pointer;">{{ email.subject or "(no subject)" }}</a></dd>
+    </div>
+    {% endif %}
+</dl>
+
+<div style="margin-top: 1rem;">
+    <label style="font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.55; display: block; margin-bottom: 0.3rem;">Note</label>
+    <textarea id="txn-note" class="note-area" rows="3" placeholder="Add a note...">{{ txn.note or '' }}</textarea>
+    <div id="note-status" class="note-status"></div>
+</div>
+
+
+<script>
+(() => {
+    const textarea = document.getElementById('txn-note');
+    const status = document.getElementById('note-status');
+    if (!textarea || !status) return;
+
+    let saveTimeout = null;
+    const txnId = {{ txn.id }};
+
+    async function saveNote() {
+        status.textContent = 'Saving...';
+        try {
+            const resp = await fetch(`/api/transactions/${txnId}/note`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ note: textarea.value }),
+            });
+            if (resp.ok) {
+                status.textContent = 'Saved';
+            } else {
+                status.textContent = 'Error saving note';
+            }
+        } catch (e) {
+            status.textContent = 'Error saving note';
+        }
+        setTimeout(() => { status.textContent = ''; }, 2000);
+    }
+
+    textarea.addEventListener('input', () => {
+        if (saveTimeout) clearTimeout(saveTimeout);
+        status.textContent = '';
+        saveTimeout = setTimeout(saveNote, 800);
+    });
+
+    textarea.addEventListener('blur', () => {
+        if (saveTimeout) {
+            clearTimeout(saveTimeout);
+            saveNote();
+        }
+    });
+})();
+</script>

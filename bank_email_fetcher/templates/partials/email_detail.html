@@ -1,0 +1,85 @@
+<style>
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1.5rem; }
+    .detail-grid dt { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.55; margin-bottom: 0.1rem; }
+    .detail-grid dd { margin: 0 0 0.75rem 0; font-size: 0.92rem; }
+    .detail-grid dd:empty::after { content: "\2014"; opacity: 0.35; }
+    .detail-title { font-size: 1.15rem; font-weight: 700; margin: 0 0 1.25rem 0; letter-spacing: -0.02em; }
+</style>
+
+<h3 class="detail-title">Email #{{ email.id }}</h3>
+
+<dl class="detail-grid">
+    <div>
+        <dt>Provider</dt>
+        <dd><span class="badge">{{ email.provider }}</span></dd>
+    </div>
+    <div>
+        <dt>Sender</dt>
+        <dd style="word-break: break-all;">{{ email.sender or "" }}</dd>
+    </div>
+    <div style="grid-column: 1 / -1;">
+        <dt>Subject</dt>
+        <dd style="white-space: normal; word-break: break-word;">{{ email.subject or "" }}</dd>
+    </div>
+    <div>
+        <dt>Status</dt>
+        <dd>
+            {% if email.status == "parsed" %}
+            <span class="badge success">parsed</span>
+            {% elif email.status == "failed" %}
+            <span class="badge danger">failed</span>
+            {% elif email.status == "pending" %}
+            <span class="badge badge-pending">pending</span>
+            {% elif email.status == "skipped" %}
+            <span class="badge">skipped</span>
+            {% else %}
+            <span class="badge">{{ email.status }}</span>
+            {% endif %}
+        </dd>
+    </div>
+    <div>
+        <dt>Received</dt>
+        <dd class="text-sm">{{ email.received_at.strftime("%d %b %Y %H:%M") if email.received_at else "" }}</dd>
+    </div>
+    <div>
+        <dt>Fetched</dt>
+        <dd class="text-sm">{{ email.fetched_at.strftime("%d %b %Y %H:%M") if email.fetched_at else "" }}</dd>
+    </div>
+    {% if email.error %}
+    <div style="grid-column: 1 / -1;">
+        <dt>Error</dt>
+        <dd style="color: var(--clr-debit); white-space: pre-wrap; word-break: break-word;">{{ email.error }}</dd>
+    </div>
+    {% endif %}
+    <div>
+        <dt>Rule ID</dt>
+        <dd style="font-family: var(--font-mono); font-size: 0.85rem;">{{ email.rule_id or "" }}</dd>
+    </div>
+    <div>
+        <dt>Source ID</dt>
+        <dd style="font-family: var(--font-mono); font-size: 0.85rem;">{{ email.source_id or "" }}</dd>
+    </div>
+    {% if txn %}
+    <div style="grid-column: 1 / -1;">
+        <dt>Linked Transaction</dt>
+        <dd>
+            <a href="#" onclick="event.preventDefault(); openDetailModal('/transactions/{{ txn.id }}/detail');" style="font-weight: 600;">
+                Transaction #{{ txn.id }} &mdash;
+                {% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ "{:,.2f}".format(txn.amount) }}
+                {% if txn.counterparty %}({{ txn.counterparty }}){% endif %}
+            </a>
+        </dd>
+    </div>
+    {% endif %}
+</dl>
+
+{% if email.source_id and email.remote_id %}
+<details style="margin-top: 1rem;">
+    <summary style="cursor: pointer; font-weight: 600;">View Original Email</summary>
+    <iframe
+        src="/emails/{{ email.id }}/original"
+        sandbox
+        style="width: 100%; height: 500px; border: 1px solid var(--border-light); border-radius: 8px; margin-top: 0.5rem; background: white;"
+    ></iframe>
+</details>
+{% endif %}

@@ -1,0 +1,489 @@
+{% extends "base.html" %}
+{% block title %}Statement #{{ upload.id }} - Ledger{% endblock %}
+{% block content %}
+
+{# ── Macros ─────────────────────────────────────────────────────────── #}
+
+{% macro imported_row(entry) %}
+<tr onclick="openDetailModal('/transactions/{{ entry.imported_txn_id }}/detail')" style="cursor: pointer;">
+    <td class="text-sm">{{ entry.date }}</td>
+    <td>
+        {% if entry.direction == "debit" %}
+        <span class="badge danger">debit</span>
+        {% else %}
+        <span class="badge success">credit</span>
+        {% endif %}
+    </td>
+    <td class="amt {% if entry.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if entry.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ entry.amount }}</td>
+    <td class="text-sm">{{ entry.narration }}</td>
+    <td class="text-sm text-muted">#{{ entry.imported_txn_id }}</td>
+</tr>
+{% endmacro %}
+
+{% macro matched_row(entry, has_ref) %}
+<tr onclick="openDetailModal('/transactions/{{ entry.db_txn_id }}/detail')" style="cursor: pointer;">
+    <td class="text-sm">{{ entry.date }}</td>
+    <td>
+        {% if entry.direction == "debit" %}
+        <span class="badge danger">debit</span>
+        {% else %}
+        <span class="badge success">credit</span>
+        {% endif %}
+    </td>
+    <td class="amt {% if entry.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if entry.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ entry.amount }}</td>
+    <td class="text-sm">{{ entry.narration }}</td>
+    <td class="text-sm">{{ entry.db_counterparty or "" }}{% if entry.enriched %} <span class="badge success" title="Updated from statement narration">enriched</span>{% endif %}</td>
+    {% if has_ref %}<td class="text-sm text-muted" style="font-family: var(--font-mono);">{{ entry.db_reference or "" }}</td>{% endif %}
+</tr>
+{% endmacro %}
+
+{% macro imported_table(entries) %}
+<figure style="margin: 0 0 1.25rem;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th><th>Direction</th><th>Amount</th><th>Narration</th><th>Txn ID</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                {{ imported_row(entry) }}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% endmacro %}
+
+{% macro missing_table(entries) %}
+<figure style="margin: 0 0 1.25rem;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th><th>Direction</th><th>Amount</th><th>Narration</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                <tr>
+                    <td class="text-sm">{{ entry.date }}</td>
+                    <td>
+                        {% if entry.direction == "debit" %}
+                        <span class="badge danger">debit</span>
+                        {% else %}
+                        <span class="badge success">credit</span>
+                        {% endif %}
+                    </td>
+                    <td class="amt {% if entry.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if entry.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ entry.amount }}</td>
+                    <td class="text-sm">{{ entry.narration }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% endmacro %}
+
+{% macro matched_table(entries) %}
+{% set has_ref = entries|selectattr('db_reference')|list|length > 0 %}
+<figure style="margin: 0;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th><th>Direction</th><th>Amount</th><th>Statement Narration</th><th>DB Counterparty</th>{% if has_ref %}<th>Reference</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                {{ matched_row(entry, has_ref) }}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% endmacro %}
+
+{# ── Header ─────────────────────────────────────────────────────────── #}
+
+<style>
+    .stmt-header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 2rem;
+        gap: 0.5rem;
+    }
+    .stmt-header h2 { margin: 0; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
+    .stmt-header-actions {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+    }
+
+    .stmt-summary {
+        background: var(--surface-muted);
+        border: 1px solid var(--border-light);
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 2rem;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 1.5rem;
+    }
+    .stmt-info { flex: 1 1 300px; min-width: 0; }
+    .stmt-info .meta-line {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.35rem;
+    }
+    .stmt-info .card-num {
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        opacity: 0.3;
+        letter-spacing: 0.04em;
+    }
+    .stmt-info .stmt-name {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+    }
+    .stmt-info .meta-secondary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.25rem;
+        font-size: 0.82rem;
+        opacity: 0.5;
+    }
+    .stmt-info .meta-secondary b { opacity: 1; font-weight: 600; }
+    .stmt-info .stmt-filename {
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        opacity: 0.2;
+        margin-top: 0.6rem;
+        word-break: break-all;
+        max-width: 350px;
+        cursor: default;
+    }
+
+    .stmt-metrics {
+        display: flex;
+        align-items: flex-end;
+        gap: 0;
+        flex-shrink: 0;
+    }
+    .stmt-hero {
+        text-align: right;
+        padding-right: 1.75rem;
+    }
+    .stmt-hero dt {
+        font-size: 0.62rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        opacity: 0.4;
+        margin-bottom: 0.3rem;
+    }
+    .stmt-hero dd {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 700;
+        font-family: var(--font-mono);
+        line-height: 1;
+    }
+    .stmt-counts {
+        display: flex;
+        gap: 1.5rem;
+        padding-left: 1.75rem;
+        border-left: 1px solid var(--border-light);
+    }
+    .stmt-count { text-align: right; }
+    .stmt-count dt {
+        font-size: 0.62rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        opacity: 0.4;
+        margin-bottom: 0.2rem;
+    }
+    .stmt-count dd {
+        margin: 0;
+        font-size: 1.2rem;
+        font-weight: 600;
+        font-family: var(--font-mono);
+        line-height: 1.1;
+    }
+    .stmt-count.is-matched dd { color: var(--clr-credit); }
+    .stmt-count .count-sub {
+        font-size: 0.65rem;
+        opacity: 0.4;
+        font-weight: 500;
+        margin-top: 0.15rem;
+    }
+
+    @media (max-width: 768px) {
+        .stmt-summary { flex-direction: column; align-items: flex-start; padding: 1.25rem; gap: 1.25rem; }
+        .stmt-metrics { width: 100%; justify-content: space-between; }
+        .stmt-hero dd { font-size: 1.6rem; }
+        .stmt-counts { padding-left: 1.25rem; }
+    }
+</style>
+
+<div class="stmt-header">
+    <h2>Statement #{{ upload.id }}</h2>
+    <div class="stmt-header-actions">
+        {% if upload.file_path %}
+        <form method="post" action="/statements/{{ upload.id }}/reprocess" style="margin: 0;">
+            <button type="submit" class="text-sm" title="Re-parse PDF and rebuild reconciliation data">Reprocess</button>
+        </form>
+        {% endif %}
+        {% if upload.email_id %}<a href="#" onclick="openDetailModal('/emails/{{ upload.email_id }}/detail'); return false;">View Email</a>{% endif %}
+        <a href="/statements">&larr; Back to Statements</a>
+    </div>
+</div>
+
+{% if upload.status == "password_required" %}
+<article class="card" style="margin-bottom: 1.5rem;">
+    <p><strong>This PDF is encrypted.</strong> Please provide the password to parse it.</p>
+    {% if upload.error %}<p class="text-sm text-muted">{{ upload.error }}</p>{% endif %}
+    <form method="post" action="/statements/{{ upload.id }}/retry" style="display: flex; align-items: flex-end; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap;">
+        <label data-field>
+            Password
+            <input type="password" name="password" required autofocus>
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.35rem; align-self: flex-end; padding-bottom: 0.35rem;">
+            <input type="checkbox" name="save_password" value="1" checked>
+            <span class="text-sm">Save for future statements</span>
+        </label>
+        <button type="submit">Retry</button>
+    </form>
+</article>
+
+{% elif upload.status == "parse_error" %}
+<article class="card" style="margin-bottom: 1.5rem;">
+    <p><strong>Failed to parse this statement.</strong></p>
+    <p class="text-sm text-muted">{{ upload.error }}</p>
+</article>
+
+{% elif recon %}
+
+{# ── Statement Summary ─────────────────────────────────────────────── #}
+
+{% set enriched_count = recon.matched|selectattr("enriched")|list|length %}
+
+<div class="stmt-summary">
+    <div class="stmt-info">
+        <div class="meta-line">
+            <span class="badge">{{ upload.bank }}</span>
+            {% if upload.card_number %}<span class="card-num">{{ upload.card_number }}</span>{% endif %}
+        </div>
+        {% if upload.statement_name %}<div class="stmt-name">{{ upload.statement_name }}</div>{% endif %}
+        <div class="meta-secondary">
+            {% if upload.due_date %}<span>Due <b>{{ upload.due_date }}</b></span>{% endif %}
+            <span>Parsed <b>{{ upload.parsed_txn_count or 0 }} txns</b></span>
+        </div>
+        {% if upload.filename %}<div class="stmt-filename" title="{{ upload.filename }}">{{ upload.filename }}</div>{% endif %}
+    </div>
+
+    <div class="stmt-metrics">
+        <dl class="stmt-hero">
+            <dt>Total Due</dt>
+            <dd>{% if upload.total_amount_due %}&#8377;{{ upload.total_amount_due }}{% else %}&mdash;{% endif %}</dd>
+        </dl>
+        <div class="stmt-counts">
+            <dl class="stmt-count is-matched">
+                <dt>Matched</dt>
+                <dd>{{ recon.matched|length }} / {{ upload.parsed_txn_count or 0 }}</dd>
+                {% if enriched_count %}<div class="count-sub">{{ enriched_count }} enriched</div>{% endif %}
+            </dl>
+            <dl class="stmt-count">
+                <dt>Imported</dt>
+                <dd>{{ upload.imported_count or 0 }}</dd>
+            </dl>
+        </div>
+    </div>
+</div>
+
+{# ── Card Summaries (multi-card only) ──────────────────────────────── #}
+
+{% if card_summaries|length > 1 %}
+<section style="margin-bottom: 1.5rem;">
+    <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Card Summary</h3>
+    <figure style="margin: 0;">
+        <div class="table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Person</th>
+                        <th>Card</th>
+                        <th>Txns</th>
+                        <th>Reward Points</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cs in card_summaries %}
+                    <tr>
+                        <td class="text-sm">{{ cs.person }}</td>
+                        <td class="text-sm text-muted">{{ cs.card_number }}</td>
+                        <td class="text-sm">{{ cs.transaction_count }}</td>
+                        <td class="text-sm">{{ cs.reward_points_total or "0" }}</td>
+                        <td class="amt">&#8377;{{ cs.total_amount }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="2" style="font-weight: 600;">Overall</td>
+                        <td></td>
+                        <td class="text-sm">{{ recon.overall_reward_points|default("", true) }}</td>
+                        <td class="amt" style="font-weight: 700;">&#8377;{{ recon.overall_total|default("", true) }}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </figure>
+</section>
+{% endif %}
+
+{# ── Payments / Refunds ─────────────────────────────────────────────── #}
+
+{% set payment_matched = recon.matched|selectattr("stmt_list", "equalto", "payments_refunds")|list %}
+{% set payment_imported = recon.missing|selectattr("imported")|selectattr("stmt_list", "equalto", "payments_refunds")|list %}
+{% if payment_matched or payment_imported %}
+<section style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Payments / Refunds
+        <span class="text-sm text-muted">({{ payment_matched|length + payment_imported|length }} transactions)</span>
+    </h3>
+    {% if payment_imported %}
+    <h4 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem; opacity: 0.7;">Imported</h4>
+    {{ imported_table(payment_imported) }}
+    {% endif %}
+    {% if payment_matched %}
+    <h4 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem; opacity: 0.7;">Matched</h4>
+    {{ matched_table(payment_matched) }}
+    {% endif %}
+    {% if recon.payments_refunds_total is defined and recon.payments_refunds_total %}
+    <p class="text-sm" style="margin-top: 0.5rem;"><strong>Payments/Refunds Total:</strong> <span class="amt amt-credit">&#8377;{{ recon.payments_refunds_total }}</span></p>
+    {% endif %}
+</section>
+{% endif %}
+
+{# ── Adjustments ─────────────────────────────────────────────────────── #}
+
+{% set adj_matched = recon.matched|selectattr("stmt_list", "equalto", "adjustments")|list %}
+{% set adj_imported = recon.missing|selectattr("imported")|selectattr("stmt_list", "equalto", "adjustments")|list %}
+{% if adj_matched or adj_imported %}
+<section style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Adjustments
+        <span class="text-sm text-muted">({{ adj_matched|length + adj_imported|length }} transactions)</span>
+    </h3>
+    {% if adj_imported %}
+    <h4 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem; opacity: 0.7;">Imported</h4>
+    {{ imported_table(adj_imported) }}
+    {% endif %}
+    {% if adj_matched %}
+    <h4 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem; opacity: 0.7;">Matched</h4>
+    {{ matched_table(adj_matched) }}
+    {% endif %}
+    {% if recon.adjustments_debit_total is defined or recon.adjustments_credit_total is defined %}
+    <p class="text-sm" style="margin-top: 0.5rem;">
+        <strong>Adjustment Totals:</strong>
+        {% if recon.adjustments_debit_total is defined and recon.adjustments_debit_total %}
+        <span class="amt amt-debit">Debits &#8377;{{ recon.adjustments_debit_total }}</span>
+        {% endif %}
+        {% if recon.adjustments_credit_total is defined and recon.adjustments_credit_total %}
+        {% if recon.adjustments_debit_total is defined and recon.adjustments_debit_total %}&middot;{% endif %}
+        <span class="amt amt-credit">Credits &#8377;{{ recon.adjustments_credit_total }}</span>
+        {% endif %}
+    </p>
+    {% endif %}
+</section>
+{% endif %}
+
+{# ── Transactions ────────────────────────────────────────────────────── #}
+
+{% set txn_matched = recon.matched|selectattr("stmt_list", "equalto", "transactions")|list %}
+{% set txn_imported = recon.missing|selectattr("imported")|selectattr("stmt_list", "equalto", "transactions")|list %}
+{% set txn_unimported = recon.missing|rejectattr("imported")|selectattr("stmt_list", "equalto", "transactions")|list %}
+
+{% if person_groups %}
+    {# ── Grouped by Person ────────────────────────────────────────── #}
+    {% for group in person_groups %}
+    <section style="margin-bottom: 2.5rem;">
+        <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+            Transactions &mdash; {{ group.person }}
+            {% if group.card_number %}<span class="badge">{{ group.card_number }}</span>{% endif %}
+            <span class="text-sm text-muted">({{ group.total_count }} txns)</span>
+        </h3>
+
+        {% if group.imported %}
+        <h4 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem; opacity: 0.7;">Imported <span class="text-sm text-muted">({{ group.imported|length }})</span></h4>
+        {{ imported_table(group.imported) }}
+        {% endif %}
+
+        {% if group.matched %}
+        <h4 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem; opacity: 0.7;">Matched <span class="text-sm text-muted">({{ group.matched|length }})</span></h4>
+        {{ matched_table(group.matched) }}
+        {% endif %}
+
+        {% if group.summary %}
+        <p class="text-sm" style="margin-top: 0.5rem;">
+            <strong>{{ group.person }} Total:</strong>
+            <span class="amt">&#8377;{{ group.summary.total_amount }}</span>
+            <span class="text-muted">&middot; {{ group.summary.transaction_count }} txns</span>
+            {% if group.summary.reward_points_total and group.summary.reward_points_total != "0" %}
+            <span class="text-muted">&middot; {{ group.summary.reward_points_total }} pts</span>
+            {% endif %}
+        </p>
+        {% endif %}
+    </section>
+    {% endfor %}
+
+{% else %}
+    {# ── Flat Layout (single card or old data) ────────────────────── #}
+    {% if txn_imported %}
+    <section style="margin-bottom: 2rem;">
+        <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Imported <span class="text-sm text-muted">(from statement, not in DB before)</span></h3>
+        {{ imported_table(txn_imported) }}
+    </section>
+    {% endif %}
+
+    {% if txn_matched %}
+    <section style="margin-bottom: 2rem;">
+        <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Matched <span class="text-sm text-muted">(in both statement and DB)</span></h3>
+        {{ matched_table(txn_matched) }}
+    </section>
+    {% endif %}
+
+    {% if txn_unimported %}
+    <section style="margin-bottom: 2rem;">
+        <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Missing <span class="text-sm text-muted">(in statement but not matched or imported)</span></h3>
+        {{ missing_table(txn_unimported) }}
+    </section>
+    {% endif %}
+{% endif %}
+
+{# ── Overall Totals ──────────────────────────────────────────────────── #}
+
+{% if recon.overall_total is defined and recon.overall_total %}
+<section style="margin-bottom: 1.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-light, #e5e7eb);">
+    <p style="font-size: 0.95rem;">
+        <strong>Spend Total (debits):</strong> <span class="amt amt-debit">&#8377;{{ recon.overall_total }}</span>
+        {% if recon.overall_reward_points is defined and recon.overall_reward_points and recon.overall_reward_points != "0" %}
+        &middot; <strong>Reward Points:</strong> {{ recon.overall_reward_points }}
+        {% endif %}
+    </p>
+</section>
+{% endif %}
+
+{% endif %}
+
+{% endblock %}

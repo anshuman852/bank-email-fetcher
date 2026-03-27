@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Email Fetcher{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/@knadh/oat/oat.min.css">
+    <script defer src="https://unpkg.com/@knadh/oat/oat.min.js"></script>
+    <style>
+        /* ---------------------------------------------------------------
+           Root & Typography
+        --------------------------------------------------------------- */
+        :root {
+            --app-max-width: 1300px;
+            --clr-debit: #dc2626;
+            --clr-credit: #16a34a;
+            --clr-pending-bg: #fef3c7;
+            --clr-pending-fg: #92400e;
+            --surface-muted: #f5f5f4;
+            --border-light: #e7e5e4;
+            --nav-pill-hover: rgba(0, 0, 0, 0.06);
+            --nav-pill-active-bg: #1c1917;
+            --nav-pill-active-fg: #fafaf9;
+            --font-body: 'DM Sans', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --clr-debit: #f87171;
+                --clr-credit: #4ade80;
+                --clr-pending-bg: #422006;
+                --clr-pending-fg: #fde68a;
+                --surface-muted: #1c1917;
+                --border-light: #292524;
+                --nav-pill-hover: rgba(255, 255, 255, 0.08);
+                --nav-pill-active-bg: #fafaf9;
+                --nav-pill-active-fg: #1c1917;
+            }
+        }
+
+        body {
+            font-family: var(--font-body);
+            max-width: var(--app-max-width);
+            margin: 0 auto;
+            padding: 0 1.5rem 2rem;
+            line-height: 1.55;
+        }
+
+        /* ---------------------------------------------------------------
+           Header & Navigation
+        --------------------------------------------------------------- */
+        .app-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 0;
+            border-bottom: 1px solid var(--border-light);
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .app-title {
+            margin: 0;
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .app-title a {
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .app-nav {
+            display: flex;
+            gap: 0.2rem;
+            flex-wrap: wrap;
+        }
+
+        .app-nav a {
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: inherit;
+            transition: background 0.15s ease;
+        }
+
+        .app-nav a:hover {
+            background: var(--nav-pill-hover);
+        }
+
+        .app-nav a[aria-current="page"] {
+            background: var(--nav-pill-active-bg);
+            color: var(--nav-pill-active-fg);
+            font-weight: 600;
+        }
+
+        /* ---------------------------------------------------------------
+           Stats Grid
+        --------------------------------------------------------------- */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 1.25rem 1rem;
+        }
+
+        .stat-card dl {
+            margin: 0;
+        }
+
+        .stat-card dt {
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            opacity: 0.55;
+            margin-bottom: 0.3rem;
+        }
+
+        .stat-card dd {
+            margin: 0;
+            font-size: 1.6rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        /* ---------------------------------------------------------------
+           Amount Formatting
+        --------------------------------------------------------------- */
+        .amt {
+            font-family: var(--font-mono);
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .amt-debit {
+            color: var(--clr-debit);
+        }
+
+        .amt-credit {
+            color: var(--clr-credit);
+        }
+
+        /* ---------------------------------------------------------------
+           Tables
+        --------------------------------------------------------------- */
+        .table {
+            overflow-x: auto;
+        }
+
+        .table table {
+            white-space: nowrap;
+            width: 100%;
+        }
+
+        .table td,
+        .table th {
+            padding: 0.5rem 0.75rem;
+            font-size: 0.88rem;
+        }
+
+        .table th {
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            opacity: 0.55;
+        }
+
+        .table tbody tr:hover {
+            background: var(--nav-pill-hover);
+        }
+
+        /* ---------------------------------------------------------------
+           Section Headers
+        --------------------------------------------------------------- */
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.25rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .section-header h2 {
+            margin: 0;
+            font-size: 1.3rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        /* ---------------------------------------------------------------
+           Filter Bar
+        --------------------------------------------------------------- */
+        .filter-bar {
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            border-radius: 8px;
+            background: var(--surface-muted);
+            border: 1px solid var(--border-light);
+        }
+
+        .filter-bar label[data-field] {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            min-width: 120px;
+            margin-block-end: 0;
+            font-size: 0.82rem;
+            font-weight: 600;
+        }
+
+        .filter-bar select,
+        .filter-bar input,
+        .filter-bar button,
+        .filter-bar [role="button"] {
+            margin-block-end: 0;
+        }
+
+        /* ---------------------------------------------------------------
+           Status Badges
+        --------------------------------------------------------------- */
+        .badge-pending {
+            background: var(--clr-pending-bg);
+            color: var(--clr-pending-fg);
+        }
+
+        /* ---------------------------------------------------------------
+           Utilities
+        --------------------------------------------------------------- */
+        .text-muted {
+            opacity: 0.55;
+        }
+
+        .text-sm {
+            font-size: 0.82rem;
+        }
+
+        .truncate {
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: inline-block;
+            vertical-align: middle;
+        }
+
+        .cell-counterparty small {
+            display: block;
+            opacity: 0.5;
+            font-size: 0.78rem;
+            line-height: 1.3;
+        }
+
+        .result-count {
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            font-weight: 600;
+            opacity: 0.55;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1.5rem;
+        }
+
+        .empty-state p:first-child {
+            font-weight: 600;
+        }
+
+        /* ---------------------------------------------------------------
+           Footer
+        --------------------------------------------------------------- */
+        .app-footer {
+            margin-top: 3rem;
+            padding: 1.25rem 0;
+            border-top: 1px solid var(--border-light);
+            text-align: center;
+            font-size: 0.78rem;
+            opacity: 0.4;
+        }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <h1 class="app-title"><a href="/">Ledger</a></h1>
+        <nav class="app-nav">
+            <a href="/" {% if active_page == "dashboard" %}aria-current="page"{% endif %}>Dashboard</a>
+            <a href="/transactions" {% if active_page == "transactions" %}aria-current="page"{% endif %}>Transactions</a>
+            <a href="/emails" {% if active_page == "emails" %}aria-current="page"{% endif %}>Emails</a>
+            <a href="/sources" {% if active_page == "sources" %}aria-current="page"{% endif %}>Sources</a>
+            <a href="/accounts" {% if active_page == "accounts" %}aria-current="page"{% endif %}>Accounts</a>
+            <a href="/statements" {% if active_page == "statements" %}aria-current="page"{% endif %}>Statements</a>
+            <a href="/rules" {% if active_page == "rules" %}aria-current="page"{% endif %}>Rules</a>
+        </nav>
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="app-footer">
+        <small>Email Fetcher &mdash; personal finance ledger</small>
+    </footer>
+
+    <dialog id="detail-modal" style="max-width: 700px; width: 90vw; max-height: 85vh; border-radius: 12px; padding: 0; border: 1px solid var(--border-light); position: relative; overflow: hidden;">
+        <div style="position: sticky; top: 0; display: flex; justify-content: flex-end; padding: 0.5rem 0.75rem 0; z-index: 1;">
+            <form method="dialog" style="margin: 0;">
+                <button type="submit" style="background: none; border: none; font-size: 1.2rem; cursor: pointer; opacity: 0.4; color: inherit; padding: 0.25rem 0.5rem; line-height: 1;">&times;</button>
+            </form>
+        </div>
+        <div id="detail-modal-content" style="padding: 0 1.5rem 1.5rem; overflow-y: auto; max-height: calc(85vh - 3rem);">
+            <p>Loading...</p>
+        </div>
+    </dialog>
+
+    <script>
+    const detailModal = document.getElementById('detail-modal');
+    const detailContent = document.getElementById('detail-modal-content');
+
+    async function openDetailModal(url) {
+        detailContent.innerHTML = '<p style="text-align:center; padding: 2rem;">Loading...</p>';
+        // Prevent body scroll while dialog is open
+        const scrollY = window.scrollY;
+        document.body.style.position = 'fixed';
+        document.body.style.top = `-${scrollY}px`;
+        document.body.style.left = '0';
+        document.body.style.right = '0';
+        detailModal.showModal();
+        try {
+            const resp = await fetch(url);
+            detailContent.innerHTML = await resp.text();
+            detailContent.querySelectorAll('script').forEach(old => {
+                const s = document.createElement('script');
+                s.textContent = old.textContent;
+                old.replaceWith(s);
+            });
+        } catch (e) {
+            detailContent.innerHTML = '<p style="color:var(--clr-debit);">Failed to load details.</p>';
+        }
+    }
+
+    // Restore scroll position on close
+    detailModal.addEventListener('close', () => {
+        const scrollY = Math.abs(parseInt(document.body.style.top || '0', 10));
+        document.body.style.position = '';
+        document.body.style.top = '';
+        document.body.style.left = '';
+        document.body.style.right = '';
+        window.scrollTo(0, scrollY);
+    });
+
+    // Close on backdrop click
+    detailModal.addEventListener('click', (e) => {
+        if (e.target === detailModal) detailModal.close();
+    });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

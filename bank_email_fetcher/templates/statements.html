@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Statements - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>CC Statements</h2>
+    <form method="post" action="/statements/reprocess-failed" style="margin: 0;">
+        <button type="submit" onclick="return confirm('Reprocess all failed emails that have PDF attachments as CC statements?');">Reprocess Failed Emails</button>
+    </form>
+</div>
+
+<article class="card" style="margin-bottom: 1.5rem;">
+    <form method="post" action="/statements/upload" enctype="multipart/form-data" style="display: flex; align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
+        <label data-field>
+            Account
+            <select name="account_id" required>
+                <option value="">Select credit card...</option>
+                {% for acc in cc_accounts %}
+                <option value="{{ acc.id }}">{{ acc.label }} ({{ acc.bank }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label data-field>
+            Statement PDF
+            <input type="file" name="file" accept=".pdf" required>
+        </label>
+        <label data-field>
+            Password <small class="text-muted">(if encrypted)</small>
+            <input type="password" name="password" placeholder="Optional">
+        </label>
+        <button type="submit">Upload &amp; Reconcile</button>
+    </form>
+</article>
+
+<section>
+{% if uploads %}
+<figure style="margin: 0;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Bank</th>
+                    <th>Account</th>
+                    <th>File</th>
+                    <th>Status</th>
+                    <th>Matched</th>
+                    <th>Missing</th>
+                    <th>Imported</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in uploads %}
+                <tr onclick="window.location='/statements/{{ u.id }}'" style="cursor: pointer;">
+                    <td class="text-sm">{{ u.created_at.strftime("%d %b %Y %H:%M") if u.created_at else "&mdash;"|safe }}</td>
+                    <td><span class="badge">{{ u.bank }}</span></td>
+                    <td class="text-sm">{% if u.account %}<a href="/accounts/{{ u.account.id }}/edit" onclick="event.stopPropagation()">{{ u.account.label }}</a>{% else %}&mdash;{% endif %}</td>
+                    <td class="text-sm text-muted">{{ u.filename }}</td>
+                    <td>
+                        {% if u.status == "parsed" %}
+                        <span class="badge">parsed</span>
+                        {% elif u.status == "imported" %}
+                        <span class="badge success">imported</span>
+                        {% elif u.status == "partial_import" %}
+                        <span class="badge badge-pending">partial</span>
+                        {% elif u.status == "password_required" %}
+                        <span class="badge danger">needs password</span>
+                        {% elif u.status == "parse_error" %}
+                        <span class="badge danger">error</span>
+                        {% else %}
+                        <span class="badge">{{ u.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-sm">{{ u.matched_count or 0 }}</td>
+                    <td class="text-sm">{{ u.missing_count or 0 }}</td>
+                    <td class="text-sm">{{ u.imported_count or 0 }}</td>
+                    <td style="white-space: nowrap;">
+                        {% if u.email_id %}<a href="#" onclick="event.stopPropagation(); openDetailModal('/emails/{{ u.email_id }}/detail'); return false;" class="text-sm">Email</a> &middot; {% endif %}
+                        <form method="post" action="/statements/{{ u.id }}/delete" onclick="event.stopPropagation();" onsubmit="return confirm('Delete this statement upload?');" style="display: inline;">
+                            <button type="submit" class="text-sm" style="color: #dc2626;">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+{% else %}
+<article class="card empty-state">
+    <p>No statements uploaded yet.</p>
+    <p class="text-sm text-muted">Upload a credit card statement PDF to reconcile against existing transactions.</p>
+</article>
+{% endif %}
+</section>
+
+{% endblock %}

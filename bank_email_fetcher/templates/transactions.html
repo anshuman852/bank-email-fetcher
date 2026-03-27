@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block title %}Transactions - Ledger{% endblock %}
+{% block content %}
+
+{% macro sort_link(col_key, col_label) %}
+{% set new_order = 'asc' if (sort == col_key and order == 'desc') else 'desc' %}
+<a href="/transactions?{{ base_qs }}{% if base_qs %}&{% endif %}sort={{ col_key }}&order={{ new_order }}" style="text-decoration: none; color: inherit; white-space: nowrap;">
+    {{ col_label }}{% if sort == col_key %} {{ '&#9650;'|safe if order == 'asc' else '&#9660;'|safe }}{% endif %}
+</a>
+{% endmacro %}
+
+<div class="section-header">
+    <h2>Transactions</h2>
+    <span class="result-count">{{ "{:,}".format(total_count) }} result{{ "s" if total_count != 1 }}</span>
+</div>
+
+<form method="get" class="filter-bar" id="transactions-filter-form">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="order" value="{{ order }}">
+    <label data-field>
+        Bank
+        <select name="bank">
+            <option value="">All Banks</option>
+            {% for b in banks %}
+            <option value="{{ b }}" {% if filters.bank == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label data-field>
+        Account
+        <select name="account_id" id="account-filter">
+            <option value="">All Accounts</option>
+        </select>
+    </label>
+    <label data-field>
+        Card
+        <select name="card_id" id="card-filter">
+            <option value="">All Cards</option>
+        </select>
+    </label>
+    <label data-field>
+        Direction
+        <select name="direction">
+            <option value="">All</option>
+            <option value="debit" {% if filters.direction == "debit" %}selected{% endif %}>Debit</option>
+            <option value="credit" {% if filters.direction == "credit" %}selected{% endif %}>Credit</option>
+        </select>
+    </label>
+    <label data-field>
+        Date From
+        <input type="date" name="date_from" value="{{ filters.date_from or '' }}">
+    </label>
+    <label data-field>
+        Date To
+        <input type="date" name="date_to" value="{{ filters.date_to or '' }}">
+    </label>
+    {% if filters.bank or filters.direction or filters.date_from or filters.date_to or filters.account_id or filters.card_id %}
+    <a
+        href="/transactions"
+        aria-label="Clear filters"
+        title="Clear filters"
+        style="display: inline-flex; align-items: center; justify-content: center; width: 2rem; min-width: 2rem; height: 2rem; padding: 0; border-radius: 999px; border: 1px solid #dc2626; color: #dc2626; text-decoration: none; font-size: 1rem; line-height: 1; align-self: flex-end;"
+    >&times;</a>
+    {% endif %}
+</form>
+
+<section>
+{% if transactions %}
+<figure style="margin: 0;">
+    <div class="table">
+        <table>
+            <thead>
+                <tr>
+                    <th>{{ sort_link('date', 'Date') }}</th>
+                    <th>{{ sort_link('bank', 'Bank') }}</th>
+                    <th>Direction</th>
+                    <th>{{ sort_link('amount', 'Amount') }}</th>
+                    <th>{{ sort_link('counterparty', 'Counterparty') }}</th>
+                    <th>Card / Account</th>
+                    <th>Reference</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for txn in transactions %}
+                <tr onclick="openDetailModal('/transactions/{{ txn.id }}/detail')" style="cursor: pointer;">
+                    <td class="text-sm">{{ txn.transaction_date.strftime("%d %b %Y") if txn.transaction_date else "&mdash;"|safe }}</td>
+                    <td><span class="badge">{{ txn.bank }}</span></td>
+                    <td>
+                        {% if txn.direction == "debit" %}
+                        <span class="badge danger">debit</span>
+                        {% else %}
+                        <span class="badge success">credit</span>
+                        {% endif %}
+                    </td>
+                    <td class="amt {% if txn.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ "{:,.2f}".format(txn.amount) }}</td>
+                    <td class="cell-counterparty">
+                        <span class="truncate" title="{{ txn.counterparty or '' }}">{{ txn.counterparty or "&mdash;"|safe }}</span>
+                        {% if txn.channel %}<small>{{ txn.channel }}</small>{% endif %}
+                    </td>
+                    <td class="text-sm text-muted">{% if txn.account %}<a href="/accounts/{{ txn.account.id }}/edit" onclick="event.stopPropagation();">{{ txn.account.label }}</a>{% else %}{{ txn.card_mask or txn.account_mask or "&mdash;"|safe }}{% endif %}</td>
+                    <td class="text-sm text-muted" style="font-family: var(--font-mono);">{{ txn.reference_number or "&mdash;"|safe }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</figure>
+
+{% if total_pages > 1 %}
+<nav style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; font-size: 0.85rem;">
+    <span class="text-muted">
+        Showing {{ "{:,}".format((page - 1) * page_size + 1) }}&ndash;{{ "{:,}".format([page * page_size, total_count]|min) }} of {{ "{:,}".format(total_count) }}
+    </span>
+    <span style="display: flex; gap: 0.25rem; align-items: center;">
+        {% if page > 1 %}
+        <a href="/transactions?{{ base_qs }}{% if base_qs %}&{% endif %}sort={{ sort }}&order={{ order }}&page={{ page - 1 }}">&laquo; Prev</a>
+        {% endif %}
+        {% set ns = namespace(prev=0) %}
+        {% for p in page_window %}
+            {% if p - ns.prev > 1 %}<span class="text-muted">&hellip;</span>{% endif %}
+            {% if p == page %}
+            <strong style="padding: 0.15rem 0.45rem; background: var(--bg-muted, #eee); border-radius: 4px;">{{ p }}</strong>
+            {% else %}
+            <a href="/transactions?{{ base_qs }}{% if base_qs %}&{% endif %}sort={{ sort }}&order={{ order }}&page={{ p }}" style="padding: 0.15rem 0.45rem;">{{ p }}</a>
+            {% endif %}
+            {% set ns.prev = p %}
+        {% endfor %}
+        {% if page < total_pages %}
+        <a href="/transactions?{{ base_qs }}{% if base_qs %}&{% endif %}sort={{ sort }}&order={{ order }}&page={{ page + 1 }}">Next &raquo;</a>
+        {% endif %}
+    </span>
+</nav>
+{% endif %}
+
+{% else %}
+<article class="card empty-state">
+    <p>No transactions match your filters.</p>
+    <p class="text-sm text-muted">Try adjusting the filters above or clear them to see all transactions.</p>
+</article>
+{% endif %}
+</section>
+
+<script>
+    const accountsByBank = {{ accounts_json|safe }};
+    const cardsByAccount = {{ cards_json|safe }};
+    const bankFilter = document.querySelector('select[name="bank"]');
+    const accountFilter = document.getElementById("account-filter");
+    const cardFilter = document.getElementById("card-filter");
+    const selectedAccountId = "{{ filters.account_id or '' }}";
+    const selectedCardId = "{{ filters.card_id or '' }}";
+    let skipAutoSubmit = true; // don't auto-submit during initial population
+
+    function populateAccounts() {
+        const bank = bankFilter.value;
+        accountFilter.innerHTML = '<option value="">All Accounts</option>';
+        let accts = [];
+        if (bank) {
+            accts = accountsByBank[bank] || [];
+        } else {
+            for (const [b, as] of Object.entries(accountsByBank)) {
+                for (const a of as) {
+                    accts.push({ ...a, bank: b });
+                }
+            }
+        }
+        for (const a of accts) {
+            const opt = document.createElement("option");
+            opt.value = a.id;
+            opt.textContent = (a.bank ? a.bank + " - " : "") + a.label;
+            if (String(a.id) === selectedAccountId) opt.selected = true;
+            accountFilter.appendChild(opt);
+        }
+    }
+
+    function populateCards() {
+        const accountId = accountFilter.value;
+        cardFilter.innerHTML = '<option value="">All Cards</option>';
+        let cards = [];
+        if (accountId) {
+            cards = cardsByAccount[accountId] || [];
+        } else {
+            for (const [aid, cs] of Object.entries(cardsByAccount)) {
+                cards = cards.concat(cs);
+            }
+        }
+        for (const c of cards) {
+            const opt = document.createElement("option");
+            opt.value = c.id;
+            opt.textContent = c.label + " (" + c.mask + ")";
+            if (String(c.id) === selectedCardId) opt.selected = true;
+            cardFilter.appendChild(opt);
+        }
+    }
+
+    // Initial population (no auto-submit)
+    populateAccounts();
+    populateCards();
+    skipAutoSubmit = false;
+
+    // Cascade: bank change -> repopulate accounts (and clear card)
+    bankFilter.addEventListener("change", () => {
+        populateAccounts();
+        populateCards();
+    });
+
+    // Cascade: account change -> repopulate cards
+    accountFilter.addEventListener("change", () => {
+        populateCards();
+    });
+
+    const transactionsFilterForm = document.getElementById("transactions-filter-form");
+    if (transactionsFilterForm) {
+        transactionsFilterForm
+            .querySelectorAll('select, input[type="date"]')
+            .forEach((field) => {
+                field.addEventListener("change", () => {
+                    if (skipAutoSubmit) return;
+                    if (typeof transactionsFilterForm.requestSubmit === "function") {
+                        transactionsFilterForm.requestSubmit();
+                    } else {
+                        transactionsFilterForm.submit();
+                    }
+                });
+            });
+    }
+</script>
+{% endblock %}

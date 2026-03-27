@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Edit Rule - Ledger{% endblock %}
+{% block content %}
+
+<div class="section-header">
+    <h2>Edit Rule</h2>
+</div>
+
+<section>
+    <article class="card">
+        <form method="post" action="/rules/{{ rule.id }}/edit">
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;">
+                <label data-field style="min-width: 180px;">
+                    Email Source
+                    <select name="source_id" required>
+                        <option value="">Select source...</option>
+                        {% for s in sources %}
+                        <option value="{{ s.id }}" {% if rule.source_id == s.id %}selected{% endif %}>{{ s.label }} ({{ s.account_identifier or s.provider }})</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label data-field style="min-width: 140px;">
+                    Bank
+                    <select name="bank" required>
+                        {% for b in supported_banks %}
+                        <option value="{{ b }}" {% if rule.bank == b %}selected{% endif %}>{{ b }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label data-field style="min-width: 180px;">
+                    Sender filter
+                    <input type="text" name="sender" value="{{ rule.sender or '' }}" placeholder="e.g. alerts@icicibank.com">
+                </label>
+                <label data-field style="min-width: 180px;">
+                    Subject filter
+                    <input type="text" name="subject" value="{{ rule.subject or '' }}" placeholder="e.g. Transaction Alert">
+                </label>
+                <label data-field style="min-width: 140px;">
+                    Folder
+                    <input type="text" name="folder" value="{{ rule.folder or '' }}" placeholder="Optional">
+                </label>
+                <label data-field style="min-width: 100px; flex-direction: row; gap: 0.5rem; align-items: center;">
+                    <input type="checkbox" name="enabled" value="true" {% if rule.enabled %}checked{% endif %} style="width: auto; margin: 0;">
+                    Enabled
+                </label>
+            </div>
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                <button type="submit">Save</button>
+                <a href="/rules"><button type="button" data-variant="secondary">Cancel</button></a>
+            </div>
+        </form>
+    </article>
+</section>
+{% endblock %}
