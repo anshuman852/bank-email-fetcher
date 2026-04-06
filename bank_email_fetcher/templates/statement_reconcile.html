@@ -376,8 +376,53 @@
 </section>
 {% endif %}
 
-{# ── Adjustments ─────────────────────────────────────────────────────── #}
+{# ── Adjustment Pairs ────────────────────────────────────────────────── #}
 
+{% set adj_pairs = recon.adjustment_pairs|default([]) %}
+{% if adj_pairs %}
+<section style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Adjustment Pairs
+        <span class="text-sm text-muted">({{ adj_pairs|length }} detected)</span>
+    </h3>
+    <div class="table">
+    <table>
+        <thead>
+            <tr>
+                <th>Kind</th><th>Confidence</th><th>Date</th><th>Side</th><th style="text-align: right;">Amount</th><th>Narration</th><th style="text-align: right;">Delta</th>
+            </tr>
+        </thead>
+            {% for p in adj_pairs %}
+            <tbody class="adj-pair-group">
+            {# Debit row #}
+            <tr>
+                <td rowspan="{{ 2 if p.credit_narration else 1 }}"><span class="badge">{{ p.kind|default("unknown") }}</span></td>
+                <td rowspan="{{ 2 if p.credit_narration else 1 }}">
+                    {% if p.confidence == "high" %}<span class="badge success">{{ p.confidence }}</span>
+                    {% elif p.confidence == "medium" %}<span class="badge">{{ p.confidence }}</span>
+                    {% else %}<span class="badge danger">{{ p.confidence|default("low") }}</span>{% endif %}
+                </td>
+                <td class="text-sm">{{ p.debit_date|default("&mdash;") }}</td>
+                <td><span class="badge danger">debit</span></td>
+                <td class="amt amt-debit" style="text-align: right;">{% if p.debit_amount %}&#8377;{{ p.debit_amount }}{% else %}&mdash;{% endif %}</td>
+                <td class="text-sm">{{ p.debit_narration|default("&mdash;") }}</td>
+                <td rowspan="{{ 2 if p.credit_narration else 1 }}" class="amt" style="text-align: right;">&#8377;{{ p.amount_delta|default("0.00") }}</td>
+            </tr>
+            {# Credit row #}
+            {% if p.credit_narration %}
+            <tr>
+                <td class="text-sm">{{ p.credit_date|default("&mdash;") }}</td>
+                <td><span class="badge success">credit</span></td>
+                <td class="amt amt-credit" style="text-align: right;">&#8377;{{ p.credit_amount }}</td>
+                <td class="text-sm">{{ p.credit_narration }}</td>
+            </tr>
+            {% endif %}
+            </tbody>
+            {% endfor %}
+    </table>
+    </div>
+</section>
+{% else %}
+{# ── Legacy fallback: old-format adjustments stored before migration ── #}
 {% set adj_matched = recon.matched|selectattr("stmt_list", "equalto", "adjustments")|list %}
 {% set adj_imported = recon.missing|selectattr("imported")|selectattr("stmt_list", "equalto", "adjustments")|list %}
 {% if adj_matched or adj_imported %}
@@ -393,19 +438,20 @@
     <h4 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem; opacity: 0.7;">Matched</h4>
     {{ matched_table(adj_matched) }}
     {% endif %}
-    {% if recon.adjustments_debit_total is defined or recon.adjustments_credit_total is defined %}
+    {% if recon.adjustments_debit_total or recon.adjustments_credit_total %}
     <p class="text-sm" style="margin-top: 0.5rem;">
-        <strong>Adjustment Totals:</strong>
-        {% if recon.adjustments_debit_total is defined and recon.adjustments_debit_total %}
+        <strong>Totals:</strong>
+        {% if recon.adjustments_debit_total and recon.adjustments_debit_total != "0.00" %}
         <span class="amt amt-debit">Debits &#8377;{{ recon.adjustments_debit_total }}</span>
         {% endif %}
-        {% if recon.adjustments_credit_total is defined and recon.adjustments_credit_total %}
-        {% if recon.adjustments_debit_total is defined and recon.adjustments_debit_total %}&middot;{% endif %}
+        {% if recon.adjustments_credit_total and recon.adjustments_credit_total != "0.00" %}
+        {% if recon.adjustments_debit_total and recon.adjustments_debit_total != "0.00" %}&middot;{% endif %}
         <span class="amt amt-credit">Credits &#8377;{{ recon.adjustments_credit_total }}</span>
         {% endif %}
     </p>
     {% endif %}
 </section>
+{% endif %}
 {% endif %}
 
 {# ── Transactions ────────────────────────────────────────────────────── #}

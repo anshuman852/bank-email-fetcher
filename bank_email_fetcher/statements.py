@@ -93,15 +93,14 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
 
     Returns a dict with matched, missing, and extra lists.
     """
-    # Build all statement transactions (debits + credits + adjustments)
+    # Build all statement transactions (debits + credits)
+    # Adjustment pairs reference the same Transaction objects already in
+    # parsed.transactions / parsed.payments_refunds, so we do NOT re-add them.
     stmt_txns = []
     for txn in (parsed.transactions or []):
         stmt_txns.append(("transactions", "debit", txn))
     for txn in (parsed.payments_refunds or []):
         stmt_txns.append(("payments_refunds", "credit", txn))
-    for txn in (parsed.adjustments or []):
-        direction = "credit" if txn.transaction_type == "credit" else "debit"
-        stmt_txns.append(("adjustments", direction, txn))
 
     # Build DB candidate pool indexed by (date, amount, direction) for fast lookup
     # Each key maps to a list of DB transactions (multiple txns can share the same key)
@@ -189,11 +188,47 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
             for cs in (parsed.card_summaries or [])
         ],
         "payments_refunds_total": parsed.payments_refunds_total,
-        "adjustments_debit_total": parsed.adjustments_debit_total,
-        "adjustments_credit_total": parsed.adjustments_credit_total,
+        "adjustment_pairs": [
+            {
+                "pair_id": p.pair_id,
+                "kind": p.kind,
+                "confidence": p.confidence,
+                "score": p.score,
+                "debit_narration": p.debit.narration if p.debit else None,
+                "debit_amount": p.debit.amount if p.debit else None,
+                "debit_date": p.debit.date if p.debit else None,
+                "credit_narration": p.credit.narration if p.credit else None,
+                "credit_amount": p.credit.amount if p.credit else None,
+                "credit_date": p.credit.date if p.credit else None,
+                "amount_delta": p.amount_delta,
+            }
+            for p in (parsed.possible_adjustment_pairs or [])
+        ],
+        "adjustments_debit_total": _calculate_adjustment_total(
+            parsed.possible_adjustment_pairs or [], "debit"
+        ),
+        "adjustments_credit_total": _calculate_adjustment_total(
+            parsed.possible_adjustment_pairs or [], "credit"
+        ),
         "overall_total": parsed.overall_total,
         "overall_reward_points": parsed.overall_reward_points,
     }
+
+
+def _calculate_adjustment_total(pairs, direction: str) -> str:
+    """Calculate total adjustment amount for high-confidence pairs in given direction."""
+    from decimal import Decimal
+    from cc_parser.parsers.tokens import parse_amount, format_amount
+    
+    total = Decimal("0")
+    for pair in pairs:
+        if pair.confidence == "high":
+            if direction == "debit" and pair.debit:
+                total += parse_amount(pair.debit.amount or "0")
+            elif direction == "credit" and pair.credit:
+                total += parse_amount(pair.credit.amount or "0")
+    
+    return format_amount(total)
 
 
 _GENERIC_COUNTERPARTIES = {"payment received", "payment successful", "payment done"}
