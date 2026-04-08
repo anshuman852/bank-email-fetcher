@@ -173,8 +173,7 @@ async def dashboard(request: FastAPIRequest):
 
     period_label = month_start.strftime("%B %Y")
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {
         "active_page": "dashboard",
         "poll_status": get_poll_status(),
         "stats": {
@@ -311,8 +310,7 @@ async def transaction_list(
             pages.add(p)
         return sorted(pages)
 
-    return templates.TemplateResponse("transactions.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "transactions.html", {
         "active_page": "transactions",
         "transactions": transactions,
         "banks": banks,
@@ -365,8 +363,7 @@ async def transaction_detail(txn_id: int, request: FastAPIRequest):
         if not row:
             return HTMLResponse("<p>Transaction not found.</p>", 404)
         txn, email, account = row
-    return templates.TemplateResponse("partials/transaction_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/transaction_detail.html", {
         "txn": txn,
         "email": email,
         "account": account,
@@ -385,8 +382,7 @@ async def email_list(request: FastAPIRequest):
         )
         emails = result.scalars().all()
 
-    return templates.TemplateResponse("emails.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "emails.html", {
         "active_page": "emails",
         "emails": emails,
     })
@@ -408,8 +404,7 @@ async def email_detail(email_id: int, request: FastAPIRequest):
         if not row:
             return HTMLResponse("<p>Email not found.</p>", 404)
         email_row, txn = row
-    return templates.TemplateResponse("partials/email_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "partials/email_detail.html", {
         "email": email_row,
         "txn": txn,
     })
@@ -500,8 +495,7 @@ async def account_list(request: FastAPIRequest):
         bank_result = await session.execute(select(Transaction.bank).distinct())
         banks = sorted([row[0] for row in bank_result.all() if row[0]])
 
-    return templates.TemplateResponse("accounts.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "accounts.html", {
         "active_page": "accounts",
         "accounts": accounts,
         "banks": banks,
@@ -552,8 +546,7 @@ async def account_edit_form(request: FastAPIRequest, account_id: int):
         except Exception:
             pass
 
-    return templates.TemplateResponse("account_edit.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "account_edit.html", {
         "active_page": "accounts",
         "account": account,
         "banks": banks,
@@ -669,8 +662,7 @@ async def source_list(request: FastAPIRequest):
         result = await session.execute(select(EmailSource).order_by(EmailSource.id))
         sources = result.scalars().all()
 
-    return templates.TemplateResponse("sources.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "sources.html", {
         "active_page": "sources",
         "sources": sources,
     })
@@ -714,8 +706,7 @@ async def edit_source_form(source_id: int, request: FastAPIRequest):
         if not source:
             return RedirectResponse(url="/sources", status_code=303)
 
-    return templates.TemplateResponse("source_edit.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "source_edit.html", {
         "active_page": "sources",
         "source": source,
     })
@@ -845,8 +836,7 @@ async def rule_list(request: FastAPIRequest):
         )
         sources = source_result.scalars().all()
 
-    return templates.TemplateResponse("rules.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "rules.html", {
         "active_page": "rules",
         "rules": rules,
         "sources": sources,
@@ -899,8 +889,7 @@ async def rule_edit_form(request: FastAPIRequest, rule_id: int):
         )
         sources = source_result.scalars().all()
 
-    return templates.TemplateResponse("rule_edit.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "rule_edit.html", {
         "active_page": "rules",
         "rule": rule,
         "sources": sources,
@@ -1107,8 +1096,7 @@ async def statements_list(request: FastAPIRequest):
             select(Account).where(Account.type == "credit_card", Account.active == True)  # noqa: E712
             .order_by(Account.bank, Account.label)
         )).scalars().all()
-    return templates.TemplateResponse("statements.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "statements.html", {
         "active_page": "statements",
         "uploads": uploads,
         "cc_accounts": cc_accounts,
@@ -1268,8 +1256,7 @@ async def statement_detail(upload_id: int, request: FastAPIRequest):
         person_groups = group_recon_by_person(recon)
         card_summaries = recon.get("card_summaries", [])
 
-    return templates.TemplateResponse("statement_reconcile.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "statement_reconcile.html", {
         "active_page": "statements",
         "upload": upload,
         "recon": recon,
