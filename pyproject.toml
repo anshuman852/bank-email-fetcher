@@ -31,3 +31,9 @@ entrypoint = "bank_email_fetcher.app:app"
 [tool.uv.sources]
 bank-email-parser = { git = "https://github.com/akhilnarang/bank-email-parser" }
 cc-parser = { git = "https://github.com/akhilnarang/cc-parser" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0,<10",
+    "pytest-anyio>=0.0.0",
+]

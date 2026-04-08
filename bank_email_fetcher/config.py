@@ -14,6 +14,7 @@ get_fernet() is a factory function (not a module-level instance) so that it
 can be called lazily from functions that need it. This avoids import-time
 failures when the key is not yet set in the environment.
 """
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,24 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
     telegram_chat_id: int = 0
+
+    # HTTP Basic Auth — both must be set to enable, or both unset to disable.
+    auth_username: str = ""
+    auth_password: SecretStr = SecretStr("")
+
+    @model_validator(mode="after")
+    def _validate_auth_pair(self):
+        has_user = bool(self.auth_username)
+        has_pass = bool(self.auth_password.get_secret_value())
+        if has_user != has_pass:
+            raise ValueError(
+                "AUTH_USERNAME and AUTH_PASSWORD must both be set or both be empty."
+            )
+        return self
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.auth_username)
 
 
 settings = Settings()

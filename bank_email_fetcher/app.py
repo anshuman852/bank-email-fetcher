@@ -27,13 +27,14 @@ from datetime import date, datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from fastapi import APIRouter, FastAPI, File, Form, Request as FastAPIRequest, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request as FastAPIRequest, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func, select, update
 
 from bank_email_fetcher.config import settings
+from bank_email_fetcher.deps import verify_credentials
 from bank_email_fetcher.crypto import encrypt_credentials, decrypt_credentials
 from urllib.parse import urlencode
 
@@ -116,6 +117,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Telegram bot failed to start (app continues without it): %s", e)
 
+    if not settings.auth_enabled:
+        logger.warning(
+            "No AUTH_USERNAME/AUTH_PASSWORD set — running without authentication. "
+            "Only run on a trusted network or behind a reverse proxy with auth."
+        )
+
     logger.info("Starting poll loop (every %d minutes)", settings.poll_interval_minutes)
     loop_task = asyncio.create_task(_poll_loop())
 
@@ -132,7 +139,11 @@ async def lifespan(app: FastAPI):
     await shutdown_telegram()
 
 
-app = FastAPI(title="Email Fetcher", lifespan=lifespan)
+app = FastAPI(
+    title="Email Fetcher",
+    lifespan=lifespan,
+    dependencies=[Depends(verify_credentials)],
+)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 api_router = APIRouter(prefix="/api")
