@@ -47,7 +47,6 @@ from sqlalchemy.exc import IntegrityError
 from bank_email_parser.api import parse_email
 from bank_email_parser.exceptions import ParseError, UnsupportedEmailTypeError
 
-from bank_email_fetcher.config import settings
 from bank_email_fetcher.crypto import decrypt_credentials
 from bank_email_fetcher.db import async_session, Email, EmailSource, FetchRule, Transaction
 from bank_email_fetcher.linker import build_link_context, link_transaction
@@ -896,7 +895,8 @@ async def poll_all() -> dict:
         POLL_STATUS["progress"] = {"source": "", "rule": "", "email": "", "detail": "Initializing..."}
 
         stats = {"rules": 0, "fetched": 0, "parsed": 0, "failed": 0, "skipped": 0}
-        fetch_limit = max(1, settings.poll_fetch_limit_per_rule)
+        from bank_email_fetcher.settings_service import get_setting_int
+        fetch_limit = max(1, get_setting_int("poll_fetch_limit_per_rule", 50))
 
         try:
             try:
@@ -1011,9 +1011,9 @@ async def poll_all() -> dict:
 
                     # Track transactions to notify via Telegram after commit
                     pending_notifications: list[tuple[int, dict]] = []  # (txn_id, txn_data_for_display)
+                    from bank_email_fetcher.settings_service import should_notify_transactions
                     should_notify = (
-                        settings.telegram_bot_token
-                        and settings.telegram_chat_id
+                        should_notify_transactions()
                         and getattr(rule, "initial_backfill_done_at", None) is not None
                     )
 
@@ -1152,9 +1152,20 @@ async def poll_all() -> dict:
 
                     # Send Telegram notifications AFTER commits (outside DB transaction)
                     if pending_notifications:
-                        from bank_email_fetcher.telegram_bot import send_transaction_notification
-                        for txn_id, txn_info in pending_notifications:
-                            await send_transaction_notification(txn_id, txn_info, settings.telegram_chat_id)
+                        from bank_email_fetcher.settings_service import get_telegram_chat_id, get_setting_int
+                        _chat_id = get_telegram_chat_id()
+                        bulk_threshold = get_setting_int("telegram.bulk_threshold", 5)
+                        if len(pending_notifications) <= bulk_threshold:
+                            from bank_email_fetcher.telegram_bot import send_transaction_notification
+                            for txn_id, txn_info in pending_notifications:
+                                await send_transaction_notification(txn_id, txn_info, _chat_id)
+                        else:
+                            from bank_email_fetcher.telegram_bot import send_bulk_summary
+                            await send_bulk_summary(
+                                len(pending_notifications), _chat_id,
+                                source="email",
+                                txns=pending_notifications,
+                            )
 
                 # Mark initial backfill complete only for rules whose search
                 # phase completed AND either produced results or genuinely

@@ -22,13 +22,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     db_url: str = "sqlite+aiosqlite:///./data/bank_email_fetcher.db"
-    poll_interval_minutes: int = 15
-    poll_fetch_limit_per_rule: int = 50
 
     email_source_master_key: str = ""  # Fernet key for encrypting credentials
-
-    telegram_bot_token: str = ""
-    telegram_chat_id: int = 0
 
     # HTTP Basic Auth — both must be set to enable, or both unset to disable.
     auth_username: str = ""
@@ -52,16 +47,23 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+_fernet_instance = None
+
+
 def get_fernet():
+    global _fernet_instance
+    if _fernet_instance is not None:
+        return _fernet_instance
+
     from cryptography.fernet import Fernet
 
     key = settings.email_source_master_key
     if not key:
-        # Auto-generate and warn (for dev convenience)
         import warnings
         key = Fernet.generate_key().decode()
         warnings.warn(
             "No EMAIL_SOURCE_MASTER_KEY set. Generated ephemeral key. "
             "Set it in .env for persistence."
         )
-    return Fernet(key.encode() if isinstance(key, str) else key)
+    _fernet_instance = Fernet(key.encode() if isinstance(key, str) else key)
+    return _fernet_instance

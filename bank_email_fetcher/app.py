@@ -90,8 +90,6 @@ async def _poll_loop() -> None:
     or multiple scheduled jobs. Plain asyncio loop is sufficient for single-user,
     single-process deployment.
     """
-    interval = max(1, settings.poll_interval_minutes) * 60
-
     while True:
         try:
             await poll_all()
@@ -100,22 +98,20 @@ async def _poll_loop() -> None:
         except Exception:
             logger.exception("Background poll failed")
 
+        from bank_email_fetcher.settings_service import get_setting_int
+        interval = max(1, get_setting_int("poll_interval_minutes", 15)) * 60
         await asyncio.sleep(interval)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from bank_email_fetcher.settings_service import start_services, stop_services
+
     logger.info("Initializing database...")
     await init_db()
     logger.info("Database ready")
 
-    if settings.telegram_bot_token and settings.telegram_chat_id:
-        from bank_email_fetcher.telegram_bot import init_telegram
-        logger.info("Starting Telegram bot...")
-        try:
-            await init_telegram(settings.telegram_bot_token)
-        except Exception as e:
-            logger.warning("Telegram bot failed to start (app continues without it): %s", e)
+    await start_services()
 
     if not settings.auth_enabled:
         logger.warning(
@@ -123,20 +119,17 @@ async def lifespan(app: FastAPI):
             "Only run on a trusted network or behind a reverse proxy with auth."
         )
 
-    logger.info("Starting poll loop (every %d minutes)", settings.poll_interval_minutes)
     loop_task = asyncio.create_task(_poll_loop())
 
     yield
 
-    logger.info("Shutting down poll loop...")
     loop_task.cancel()
     try:
         await loop_task
     except asyncio.CancelledError:
         pass
 
-    from bank_email_fetcher.telegram_bot import shutdown_telegram
-    await shutdown_telegram()
+    await stop_services()
 
 
 app = FastAPI(
@@ -1061,10 +1054,11 @@ async def reparse_email(email_id: int):
                     return JSONResponse({"ok": False, "error": em.error})
 
     # Send Telegram notification for the new transaction
-    if txn_id and txn_data and settings.telegram_bot_token and settings.telegram_chat_id:
+    from bank_email_fetcher.settings_service import should_notify_transactions, get_telegram_chat_id
+    if txn_id and txn_data and should_notify_transactions():
         try:
             from bank_email_fetcher.telegram_bot import send_transaction_notification
-            await send_transaction_notification(txn_id, txn_data, settings.telegram_chat_id)
+            await send_transaction_notification(txn_id, txn_data, get_telegram_chat_id())
         except Exception as tg_err:
             logger.warning("Telegram notification failed for reparsed txn #%s: %s", txn_id, tg_err)
 
@@ -1073,6 +1067,42 @@ async def reparse_email(email_id: int):
         msg = f"CC statement re-processed (matched={stmt_result.get('matched', 0)}, imported={stmt_result.get('imported', 0)})"
     logger.info("Reparse of email %d succeeded: %s", email_id, msg)
     return JSONResponse({"ok": True, "message": msg, "new_status": "parsed", "txn_id": txn_id})
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: FastAPIRequest):
+    from bank_email_fetcher.settings_service import get_grouped_settings
+
+    return templates.TemplateResponse(request, "settings.html", {
+        "active_page": "settings",
+        "grouped_settings": get_grouped_settings(),
+    })
+
+
+@app.post("/settings")
+async def save_settings_route(request: FastAPIRequest):
+    from bank_email_fetcher.settings_service import (
+        parse_form_updates, save_settings, get_grouped_settings,
+        restart_services,
+    )
+
+    form = await request.form()
+    updates, errors = parse_form_updates(form)
+
+    if errors:
+        return templates.TemplateResponse(request, "settings.html", {
+            "active_page": "settings",
+            "grouped_settings": get_grouped_settings(),
+            "errors": errors,
+        }, status_code=422)
+
+    changed_keys = await save_settings(updates)
+
+    telegram_restart_keys = {"telegram.bot_token", "telegram.chat_id", "telegram.enabled"}
+    if changed_keys & telegram_restart_keys:
+        await restart_services()
+
+    return RedirectResponse(url="/settings?saved", status_code=303)
 
 
 # ---------------------------------------------------------------------------

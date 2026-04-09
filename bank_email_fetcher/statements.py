@@ -676,17 +676,18 @@ async def process_statement_email(
         await session.commit()
 
         # Telegram notifications for imported transactions
-        from bank_email_fetcher.config import settings
-        if imported_txns and settings.telegram_bot_token and settings.telegram_chat_id:
-            BULK_THRESHOLD = 5
-            if len(imported_txns) <= BULK_THRESHOLD:
+        from bank_email_fetcher.settings_service import should_notify_transactions, get_telegram_chat_id, get_setting_int
+        if imported_txns and should_notify_transactions():
+            chat_id = get_telegram_chat_id()
+            bulk_threshold = get_setting_int("telegram.bulk_threshold", 5)
+            if len(imported_txns) <= bulk_threshold:
                 from bank_email_fetcher.telegram_bot import send_transaction_notification
                 for txn_id, txn_info in imported_txns:
-                    await send_transaction_notification(txn_id, txn_info, settings.telegram_chat_id)
+                    await send_transaction_notification(txn_id, txn_info, chat_id)
             else:
                 from bank_email_fetcher.telegram_bot import send_bulk_summary
                 await send_bulk_summary(
-                    len(imported_txns), settings.telegram_chat_id,
+                    len(imported_txns), chat_id,
                     account_label=account.label,
                     source="cc_statement",
                     txns=imported_txns,

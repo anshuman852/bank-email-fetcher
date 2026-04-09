@@ -137,6 +137,14 @@ class StatementUpload(Base):
     account = relationship("Account", lazy="joined")
 
 
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False, default="")
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
 
@@ -308,3 +316,7 @@ async def init_db() -> None:
             await conn.execute(text("SELECT email_id FROM statement_uploads LIMIT 0"))
         except Exception:
             await conn.execute(text("ALTER TABLE statement_uploads ADD COLUMN email_id INTEGER REFERENCES emails(id)"))
+
+    # Populate in-memory settings cache
+    from bank_email_fetcher.settings_service import load_all_settings
+    await load_all_settings()

@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}Settings - Ledger{% endblock %}
+{% block content %}
+
+<style>
+    .toggle {
+        position: relative;
+        display: inline-block;
+        width: 38px;
+        height: 22px;
+        flex-shrink: 0;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle .slider {
+        position: absolute; inset: 0;
+        background: var(--border-light); border-radius: 999px;
+        cursor: pointer; transition: background 0.2s;
+    }
+    .toggle .slider::before {
+        content: ""; position: absolute; left: 3px; top: 3px;
+        width: 16px; height: 16px; background: white;
+        border-radius: 50%; transition: transform 0.2s;
+    }
+    .toggle input:checked + .slider { background: var(--clr-credit); }
+    .toggle input:checked + .slider::before { transform: translateX(16px); }
+    .toggle input:focus-visible + .slider { outline: 2px solid var(--clr-credit); outline-offset: 2px; }
+
+    .setting-row { display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.5rem 0; }
+    .setting-row + .setting-row { border-top: 1px solid var(--border-light); }
+    .setting-label { flex: 1; min-width: 0; }
+    .setting-label strong { font-size: 0.88rem; font-weight: 600; }
+    .setting-label small { display: block; margin-top: 0.1rem; opacity: 0.5; font-size: 0.78rem; line-height: 1.35; }
+
+    .pw-wrap { position: relative; }
+    .pw-wrap input { padding-right: 2.75rem; width: 100%; }
+    .pw-toggle {
+        position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%);
+        background: none; border: none; cursor: pointer; color: inherit;
+        opacity: 0.4; padding: 0.25rem; font-size: 0.82rem; line-height: 1;
+        z-index: 2; user-select: none; display: none;
+    }
+    .pw-wrap.has-value .pw-toggle { display: block; }
+    .pw-toggle:hover { opacity: 0.8; }
+
+    .inline-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+    .inline-fields label[data-field] { margin-block-end: 0; }
+
+    .toast {
+        position: fixed; bottom: 1.5rem; right: 1.5rem;
+        padding: 0.65rem 1.25rem; border-radius: 8px;
+        font-size: 0.85rem; font-weight: 600; color: white;
+        z-index: 9999; opacity: 0; transform: translateY(0.5rem);
+        transition: opacity 0.3s, transform 0.3s; pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { background: var(--clr-credit); }
+</style>
+
+<div class="section-header">
+    <h2>Settings</h2>
+</div>
+
+{% if errors %}
+<article class="card" style="margin-bottom: 1.5rem; border-left: 3px solid var(--clr-debit);">
+    <strong>Validation errors — changes not saved:</strong>
+    <ul style="margin: 0.5rem 0 0; padding-left: 1.25rem;">
+    {% for err in errors %}
+        <li>{{ err }}</li>
+    {% endfor %}
+    </ul>
+</article>
+{% endif %}
+
+<form method="post" action="/settings" id="settings-form">
+{% for category, items in grouped_settings.items() %}
+    <section style="margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1rem; margin-bottom: 0.75rem;">{{ category }}</h3>
+        <article class="card" style="margin-bottom: 0;">
+
+            {% set conn_fields = [] %}
+            {% set toggle_fields = [] %}
+            {% set number_fields = [] %}
+            {% for s in items %}
+                {% if s.secret or (s.type == "int" and s.key.endswith("chat_id")) %}
+                    {% set _ = conn_fields.append(s) %}
+                {% elif s.type == "bool" %}
+                    {% set _ = toggle_fields.append(s) %}
+                {% else %}
+                    {% set _ = number_fields.append(s) %}
+                {% endif %}
+            {% endfor %}
+
+            {% if conn_fields %}
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; {% if toggle_fields or number_fields %}margin-bottom: 0.75rem;{% endif %}">
+                {% for s in conn_fields %}
+                    {% if s.secret %}
+                    <div data-field>
+                        <label for="setting-{{ s.key|replace('.', '-') }}">{{ s.label }}</label>
+                        <div class="pw-wrap">
+                            <input type="password" name="{{ s.key }}" id="setting-{{ s.key|replace('.', '-') }}" placeholder="{{ 'Configured — leave blank to keep' if s.is_set else 'Not set' }}" value="" autocomplete="off">
+                            <span class="pw-toggle" role="button" tabindex="0">show</span>
+                        </div>
+                        {% if s.description %}<small class="text-sm text-muted">{{ s.description }}</small>{% endif %}
+                    </div>
+                    {% else %}
+                    <label data-field>
+                        {{ s.label }}
+                        <input type="number" name="{{ s.key }}" value="{{ s.value if s.value else '' }}" placeholder="Not set">
+                        {% if s.description %}<small class="text-sm text-muted">{{ s.description }}</small>{% endif %}
+                    </label>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if toggle_fields %}
+            <div>
+                {% for s in toggle_fields %}
+                <div class="setting-row">
+                    <label class="toggle">
+                        <input type="checkbox" name="{{ s.key }}" value="true" {% if s.value == "true" %}checked{% endif %}>
+                        <span class="slider"></span>
+                    </label>
+                    <div class="setting-label">
+                        <strong>{{ s.label }}</strong>
+                        {% if s.description %}<small>{{ s.description }}</small>{% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if number_fields %}
+            <div class="inline-fields" {% if toggle_fields or conn_fields %}style="margin-top: 0.75rem;"{% endif %}>
+                {% for s in number_fields %}
+                <label data-field>
+                    {{ s.label }}
+                    {% if s.type == "json" %}
+                    <input type="text" name="{{ s.key }}" value="{{ s.value|replace('[', '')|replace(']', '')|replace(' ', '') if s.value else '' }}" placeholder="e.g. 7,3,1,0" inputmode="numeric">
+                    {% else %}
+                    <input type="number" name="{{ s.key }}" value="{{ s.value }}" min="1">
+                    {% endif %}
+                    {% if s.description %}<small class="text-sm text-muted">{{ s.description }}</small>{% endif %}
+                </label>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+        </article>
+    </section>
+{% endfor %}
+    <div style="margin-top: 1rem;">
+        <button type="submit" id="save-btn">Save Settings</button>
+    </div>
+</form>
+
+<div class="toast" id="toast"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.pw-wrap input').forEach(function(input) {
+    input.addEventListener('input', function() {
+        input.closest('.pw-wrap').classList.toggle('has-value', input.value.length > 0);
+    });
+});
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.pw-toggle');
+    if (!btn) return;
+    var input = btn.closest('.pw-wrap').querySelector('input');
+    if (!input) return;
+    input.type = input.type === 'password' ? 'text' : 'password';
+    btn.textContent = input.type === 'password' ? 'show' : 'hide';
+});
+
+document.getElementById('settings-form').addEventListener('submit', function() {
+    var btn = document.getElementById('save-btn');
+    btn.textContent = 'Saving\u2026';
+    btn.disabled = true;
+});
+
+var params = new URLSearchParams(window.location.search);
+if (params.has('saved')) {
+    var toast = document.getElementById('toast');
+    toast.textContent = 'Settings saved';
+    toast.classList.add('success', 'show');
+    setTimeout(function() { toast.classList.remove('show'); }, 2500);
+    history.replaceState(null, '', window.location.pathname);
+}
+</script>
+{% endblock %}

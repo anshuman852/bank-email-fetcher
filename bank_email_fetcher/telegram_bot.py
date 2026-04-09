@@ -22,10 +22,22 @@ async def init_telegram(token: str):
     global tg_app
     app = Application.builder().token(token).build()
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, _handle_reply))
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True, allowed_updates=["message"])
-    tg_app = app  # assign only after full success
+    try:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True, allowed_updates=["message"])
+    except Exception:
+        # Clean up partially-started resources before re-raising
+        try:
+            if app.updater.running:
+                await app.updater.stop()
+            if app.running:
+                await app.stop()
+            await app.shutdown()
+        except Exception:
+            pass
+        raise
+    tg_app = app
     logger.info("Telegram bot started")
 
 
@@ -33,10 +45,16 @@ async def shutdown_telegram():
     """Shutdown the Telegram bot."""
     global tg_app
     if tg_app:
-        await tg_app.updater.stop()
-        await tg_app.stop()
-        await tg_app.shutdown()
+        app = tg_app
         tg_app = None
+        try:
+            if app.updater.running:
+                await app.updater.stop()
+            if app.running:
+                await app.stop()
+            await app.shutdown()
+        except Exception as e:
+            logger.warning("Error during Telegram shutdown: %s", e)
         logger.info("Telegram bot stopped")
 
 
@@ -134,13 +152,13 @@ async def send_bulk_summary(
 
 async def _handle_reply(update: Update, context) -> None:
     """Handle reply messages — save as transaction note. Only authorized chat."""
-    from bank_email_fetcher.config import settings
+    from bank_email_fetcher.settings_service import get_telegram_chat_id
 
     msg = update.message
     if not msg or not msg.text:
         return
     # Only accept from configured chat
-    if msg.chat_id != settings.telegram_chat_id:
+    if msg.chat_id != get_telegram_chat_id():
         return
     if not msg.reply_to_message or not msg.reply_to_message.text:
         return
