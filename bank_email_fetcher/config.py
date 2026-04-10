@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     auth_username: str = ""
     auth_password: SecretStr = SecretStr("")
 
+    # comma-separated CIDRs to skip auth
+    auth_skip_cidrs: str = ""
+
     @model_validator(mode="after")
     def _validate_auth_pair(self):
         has_user = bool(self.auth_username)
