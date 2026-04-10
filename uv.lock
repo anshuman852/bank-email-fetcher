@@ -111,7 +111,7 @@ wheels = [
 [[package]]
 name = "cc-parser"
 version = "0.1.0"
-source = { git = "https://github.com/akhilnarang/cc-parser#e90ae5df0c284fbbcdb874962a1d0b3113d4028d" }
+source = { git = "https://github.com/akhilnarang/cc-parser#216e35e2f4376da51c60ac2958d70342c65fffaf" }
 dependencies = [
     { name = "pdfplumber" },
     { name = "pydantic" },
