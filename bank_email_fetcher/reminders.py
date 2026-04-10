@@ -153,6 +153,11 @@ async def check_and_send_reminders() -> int:
             except ValueError, InvalidOperation:
                 continue
 
+            # Nothing owed — auto-mark as paid and skip
+            if amount_due <= 0:
+                upload.payment_status = PaymentStatus.PAID
+                continue
+
             days_until_due = (due - today).days  # positive = future, negative = overdue
             changed = False
             sent_this_cycle = False

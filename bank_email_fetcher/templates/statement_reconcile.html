@@ -236,10 +236,16 @@
     }
 </style>
 
+{% if error %}
+<article class="card" style="margin-bottom: 1.5rem; border-left: 3px solid var(--clr-debit);">
+    <strong>Reprocess failed:</strong> {{ error }}
+</article>
+{% endif %}
+
 <div class="stmt-header">
     <h2>Statement #{{ upload.id }}</h2>
     <div class="stmt-header-actions">
-        {% if upload.file_path %}
+        {% if upload.file_path or upload.email_id %}
         <form method="post" action="/statements/{{ upload.id }}/reprocess" style="margin: 0;">
             <button type="submit" class="text-sm" title="Re-parse PDF and rebuild reconciliation data">Reprocess</button>
         </form>

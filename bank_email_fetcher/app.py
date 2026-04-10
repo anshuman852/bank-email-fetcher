@@ -1313,6 +1313,7 @@ async def statement_detail(upload_id: int, request: FastAPIRequest):
         "recon": recon,
         "person_groups": person_groups,
         "card_summaries": card_summaries,
+        "error": request.query_params.get("error"),
     })
 
 
@@ -1493,34 +1494,37 @@ async def statement_reprocess(upload_id: int):
             except Exception:
                 pass
 
+    def _reprocess_fail(msg: str):
+        logger.warning("Reprocess failed for statement %d: %s", upload_id, msg)
+        return RedirectResponse(
+            url=f"/statements/{upload_id}?{urlencode({'error': msg})}",
+            status_code=303,
+        )
+
     # If PDF file exists on disk, use it directly
     pdf_path = Path(file_path) if file_path else None
     if pdf_path and pdf_path.exists():
         try:
             parsed = await asyncio.to_thread(parse_statement, pdf_path, password)
         except Exception as e:
-            logger.warning("Reprocess failed for statement %d: %s", upload_id, e)
-            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+            return _reprocess_fail(f"Parse error: {e}")
     elif email_id:
         # PDF not on disk — re-fetch from email source
         async with async_session() as session:
             email_row = await session.get(Email, email_id)
             if not email_row or not email_row.source_id or not email_row.remote_id:
-                logger.warning("Reprocess failed for statement %d: email not available for re-fetch", upload_id)
-                return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+                return _reprocess_fail("Original email not available for re-fetch")
             source = await session.get(EmailSource, email_row.source_id)
             if not source:
-                logger.warning("Reprocess failed for statement %d: email source not found", upload_id)
-                return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+                return _reprocess_fail("Email source not found")
             remote_id = email_row.remote_id
             provider = source.provider
             encrypted_creds = source.credentials
 
         try:
             creds = decrypt_credentials(encrypted_creds)
-        except Exception as e:
-            logger.warning("Reprocess failed for statement %d: credential decryption failed: %s", upload_id, e)
-            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+        except Exception:
+            return _reprocess_fail("Email source credential decryption failed")
 
         if provider == "gmail":
             raw = await asyncio.to_thread(
@@ -1534,23 +1538,19 @@ async def statement_reprocess(upload_id: int):
             raw = None
 
         if not raw:
-            logger.warning("Reprocess failed for statement %d: could not fetch email from provider", upload_id)
-            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+            return _reprocess_fail("Could not fetch email from provider")
 
         pdfs = extract_pdf_from_email(raw)
         if not pdfs:
-            logger.warning("Reprocess failed for statement %d: no PDF in re-fetched email", upload_id)
-            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+            return _reprocess_fail("No PDF attachment found in re-fetched email")
 
         from bank_email_fetcher.statements import _parse_pdf_bytes_sync
         try:
             parsed = await asyncio.to_thread(_parse_pdf_bytes_sync, pdfs[0][1], password)
         except Exception as e:
-            logger.warning("Reprocess failed for statement %d: %s", upload_id, e)
-            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+            return _reprocess_fail(f"Parse error: {e}")
     else:
-        logger.warning("Reprocess failed for statement %d: no PDF file and no linked email", upload_id)
-        return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+        return _reprocess_fail("PDF file missing and no linked email to re-fetch from")
 
     async with async_session() as session:
         db_txns = (await session.execute(
