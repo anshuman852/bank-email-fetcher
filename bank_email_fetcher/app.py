@@ -1509,6 +1509,17 @@ async def statement_reprocess(upload_id: int):
         upload = await session.get(StatementUpload, upload_id)
         upload.card_number = parsed.card_number
         upload.statement_name = parsed.name
+        # Reset payment tracking if due_date or amount changed
+        if (
+            upload.due_date != parsed.due_date
+            or upload.total_amount_due != parsed.statement_total_amount_due
+        ):
+            upload.payment_status = None
+            upload.payment_paid_amount = 0
+            upload.payment_paid_at = None
+            upload.payment_sent_offsets = "[]"
+            upload.payment_last_reminded_at = None
+
         upload.due_date = parsed.due_date
         upload.total_amount_due = parsed.statement_total_amount_due
         upload.parsed_txn_count = len(recon["matched"]) + len(recon["missing"])
