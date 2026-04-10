@@ -1472,13 +1472,15 @@ async def statement_reprocess(upload_id: int):
         enrich_matched_transactions,
     )
 
+    from bank_email_fetcher.statements import extract_pdf_from_email
+
     async with async_session() as session:
         upload = await session.get(StatementUpload, upload_id)
-        if not upload or not upload.file_path:
+        if not upload:
             return RedirectResponse(url="/statements", status_code=303)
         account_id = upload.account_id
         file_path = upload.file_path
-        bank = upload.bank
+        email_id = upload.email_id
 
     # Try to get password if needed
     password = None
@@ -1491,10 +1493,63 @@ async def statement_reprocess(upload_id: int):
             except Exception:
                 pass
 
-    try:
-        parsed = await asyncio.to_thread(parse_statement, Path(file_path), password)
-    except Exception as e:
-        logger.warning("Reprocess failed for statement %d: %s", upload_id, e)
+    # If PDF file exists on disk, use it directly
+    pdf_path = Path(file_path) if file_path else None
+    if pdf_path and pdf_path.exists():
+        try:
+            parsed = await asyncio.to_thread(parse_statement, pdf_path, password)
+        except Exception as e:
+            logger.warning("Reprocess failed for statement %d: %s", upload_id, e)
+            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+    elif email_id:
+        # PDF not on disk — re-fetch from email source
+        async with async_session() as session:
+            email_row = await session.get(Email, email_id)
+            if not email_row or not email_row.source_id or not email_row.remote_id:
+                logger.warning("Reprocess failed for statement %d: email not available for re-fetch", upload_id)
+                return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+            source = await session.get(EmailSource, email_row.source_id)
+            if not source:
+                logger.warning("Reprocess failed for statement %d: email source not found", upload_id)
+                return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+            remote_id = email_row.remote_id
+            provider = source.provider
+            encrypted_creds = source.credentials
+
+        try:
+            creds = decrypt_credentials(encrypted_creds)
+        except Exception as e:
+            logger.warning("Reprocess failed for statement %d: credential decryption failed: %s", upload_id, e)
+            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+
+        if provider == "gmail":
+            raw = await asyncio.to_thread(
+                _fetch_gmail_single_sync, creds["user"], creds["app_password"], remote_id
+            )
+        elif provider == "fastmail":
+            raw = await asyncio.to_thread(
+                _fetch_fastmail_single_sync, creds["token"], remote_id
+            )
+        else:
+            raw = None
+
+        if not raw:
+            logger.warning("Reprocess failed for statement %d: could not fetch email from provider", upload_id)
+            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+
+        pdfs = extract_pdf_from_email(raw)
+        if not pdfs:
+            logger.warning("Reprocess failed for statement %d: no PDF in re-fetched email", upload_id)
+            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+
+        from bank_email_fetcher.statements import _parse_pdf_bytes_sync
+        try:
+            parsed = await asyncio.to_thread(_parse_pdf_bytes_sync, pdfs[0][1], password)
+        except Exception as e:
+            logger.warning("Reprocess failed for statement %d: %s", upload_id, e)
+            return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
+    else:
+        logger.warning("Reprocess failed for statement %d: no PDF file and no linked email", upload_id)
         return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
 
     async with async_session() as session:
