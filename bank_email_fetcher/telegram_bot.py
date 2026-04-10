@@ -10,7 +10,7 @@ import logging
 import re
 
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +22,14 @@ async def init_telegram(token: str):
     global tg_app
     app = Application.builder().token(token).build()
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, _handle_reply))
+    app.add_handler(CallbackQueryHandler(_handle_callback))
     try:
         await app.initialize()
         await app.start()
-        await app.updater.start_polling(drop_pending_updates=True, allowed_updates=["message"])
+        await app.updater.start_polling(
+            drop_pending_updates=True, allowed_updates=["message", "callback_query"]
+        )
     except Exception:
-        # Clean up partially-started resources before re-raising
         try:
             if app.updater.running:
                 await app.updater.stop()
@@ -58,7 +60,9 @@ async def shutdown_telegram():
         logger.info("Telegram bot stopped")
 
 
-async def send_transaction_notification(txn_id: int, txn_info: dict, chat_id: int) -> None:
+async def send_transaction_notification(
+    txn_id: int, txn_info: dict, chat_id: int
+) -> None:
     """Send a transaction notification. Includes #txn_id for reply matching."""
     app = tg_app
     if not app:
@@ -104,7 +108,9 @@ async def send_transaction_notification(txn_id: int, txn_info: dict, chat_id: in
         text = "\n".join(lines)
         await app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
     except Exception as e:
-        logger.warning("Failed to send Telegram notification for txn #%s: %s", txn_id, e)
+        logger.warning(
+            "Failed to send Telegram notification for txn #%s: %s", txn_id, e
+        )
 
 
 async def send_bulk_summary(
@@ -150,6 +156,19 @@ async def send_bulk_summary(
         logger.warning("Failed to send Telegram bulk summary: %s", e)
 
 
+async def _handle_callback(update: Update, context) -> None:
+    """Route callback queries to appropriate handlers."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    if query.data.startswith("paid:"):
+        from bank_email_fetcher.reminders import handle_mark_paid_callback
+
+        await handle_mark_paid_callback(update, context)
+    else:
+        await query.answer("Unknown action")
+
+
 async def _handle_reply(update: Update, context) -> None:
     """Handle reply messages — save as transaction note. Only authorized chat."""
     from bank_email_fetcher.settings_service import get_telegram_chat_id
@@ -163,7 +182,10 @@ async def _handle_reply(update: Update, context) -> None:
     if not msg.reply_to_message or not msg.reply_to_message.text:
         return
     # Only accept replies to messages sent by this bot
-    if not msg.reply_to_message.from_user or msg.reply_to_message.from_user.id != context.bot.id:
+    if (
+        not msg.reply_to_message.from_user
+        or msg.reply_to_message.from_user.id != context.bot.id
+    ):
         return
 
     # Parse transaction ID from the first line of the notification (e.g., "#1234")

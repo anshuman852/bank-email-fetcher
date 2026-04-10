@@ -12,10 +12,26 @@ A one-time SQLite migration removes a legacy unique constraint
 (uq_transaction_dedup) that was replaced by a partial index on
 (bank, reference_number) where reference_number IS NOT NULL.
 """
+
 import datetime
 import logging
+from enum import StrEnum
 
-from sqlalchemy import Boolean, Column, Date, Index, Integer, Numeric, String, Text, DateTime, Time, UniqueConstraint, ForeignKey, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    DateTime,
+    Time,
+    UniqueConstraint,
+    ForeignKey,
+    text,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -28,6 +44,13 @@ logger = logging.getLogger(__name__)
 
 class Base(DeclarativeBase):
     pass
+
+
+class PaymentStatus(StrEnum):
+    UNPAID = "unpaid"
+    PARTIALLY_PAID = "partially_paid"
+    PAID = "paid"
+    LATE = "late"
 
 
 class EmailSource(Base):
@@ -55,7 +78,9 @@ class Account(Base):
     statement_password = Column(String)  # Fernet-encrypted, for CC statement PDFs
     active = Column(Boolean, default=True)
 
-    cards = relationship("Card", lazy="selectin", order_by="Card.is_primary.desc(), Card.id")
+    cards = relationship(
+        "Card", lazy="selectin", order_by="Card.is_primary.desc(), Card.id"
+    )
 
 
 class Card(Base):
@@ -102,7 +127,9 @@ class Email(Base):
     subject = Column(String)
     received_at = Column(DateTime)
     fetched_at = Column(DateTime, default=datetime.datetime.utcnow)
-    status = Column(String, default="pending", index=True)  # pending, parsed, failed, skipped
+    status = Column(
+        String, default="pending", index=True
+    )  # pending, parsed, failed, skipped
     error = Column(Text)
     rule_id = Column(Integer, ForeignKey("fetch_rules.id"))
 
@@ -121,7 +148,9 @@ class StatementUpload(Base):
     bank = Column(String, nullable=False)
     filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
-    status = Column(String, nullable=False, default="parsed")  # parsed, password_required, parse_error, imported, partial_import
+    status = Column(
+        String, nullable=False, default="parsed"
+    )  # parsed, password_required, parse_error, imported, partial_import
     card_number = Column(String)
     statement_name = Column(String)
     due_date = Column(String)
@@ -134,6 +163,15 @@ class StatementUpload(Base):
     error = Column(Text)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+    # Payment tracking (populated when due_date is present)
+    payment_status = Column(String)  # PaymentStatus enum value, NULL = no due date
+    payment_sent_offsets = Column(
+        Text, default="[]"
+    )  # JSON list of reminder day-offsets already sent
+    payment_last_reminded_at = Column(DateTime)
+    payment_paid_at = Column(DateTime)
+    payment_paid_amount = Column(Numeric(precision=12, scale=2), default=0)
+
     account = relationship("Account", lazy="joined")
 
 
@@ -142,7 +180,9 @@ class Setting(Base):
 
     key = Column(String, primary_key=True)
     value = Column(Text, nullable=False, default="")
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    updated_at = Column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
 
 
 class Transaction(Base):
@@ -153,7 +193,9 @@ class Transaction(Base):
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
     card_id = Column(Integer, ForeignKey("cards.id"), nullable=True)
 
-    statement_upload_id = Column(Integer, ForeignKey("statement_uploads.id"), nullable=True)
+    statement_upload_id = Column(
+        Integer, ForeignKey("statement_uploads.id"), nullable=True
+    )
 
     account = relationship("Account", lazy="joined")
     card = relationship("Card", lazy="joined")
@@ -180,7 +222,13 @@ class Transaction(Base):
         Index("ix_transactions_bank", "bank"),
         # Reference numbers (UTR, UPI ref, etc.) are unique within the banking system
         # SQLite treats NULLs as distinct, so this only applies when reference_number is set
-        Index("uq_transactions_ref", "bank", "reference_number", unique=True, sqlite_where=text("reference_number IS NOT NULL")),
+        Index(
+            "uq_transactions_ref",
+            "bank",
+            "reference_number",
+            unique=True,
+            sqlite_where=text("reference_number IS NOT NULL"),
+        ),
     )
 
 
@@ -275,11 +323,15 @@ def _migrate_sqlite_transactions_table(sync_conn) -> None:
             """
         )
         sync_conn.exec_driver_sql("DROP TABLE transactions")
-        sync_conn.exec_driver_sql("ALTER TABLE transactions__new RENAME TO transactions")
+        sync_conn.exec_driver_sql(
+            "ALTER TABLE transactions__new RENAME TO transactions"
+        )
         sync_conn.exec_driver_sql(
             "CREATE INDEX ix_transactions_transaction_date ON transactions (transaction_date)"
         )
-        sync_conn.exec_driver_sql("CREATE INDEX ix_transactions_bank ON transactions (bank)")
+        sync_conn.exec_driver_sql(
+            "CREATE INDEX ix_transactions_bank ON transactions (bank)"
+        )
     finally:
         sync_conn.exec_driver_sql("PRAGMA foreign_keys=ON")
 
@@ -296,27 +348,83 @@ async def init_db() -> None:
         except Exception:
             await conn.execute(text("ALTER TABLE transactions ADD COLUMN note TEXT"))
         try:
-            await conn.execute(text("SELECT statement_upload_id FROM transactions LIMIT 0"))
+            await conn.execute(
+                text("SELECT statement_upload_id FROM transactions LIMIT 0")
+            )
         except Exception:
-            await conn.execute(text("ALTER TABLE transactions ADD COLUMN statement_upload_id INTEGER REFERENCES statement_uploads(id)"))
+            await conn.execute(
+                text(
+                    "ALTER TABLE transactions ADD COLUMN statement_upload_id INTEGER REFERENCES statement_uploads(id)"
+                )
+            )
         try:
             await conn.execute(text("SELECT statement_password FROM accounts LIMIT 0"))
         except Exception:
-            await conn.execute(text("ALTER TABLE accounts ADD COLUMN statement_password VARCHAR"))
+            await conn.execute(
+                text("ALTER TABLE accounts ADD COLUMN statement_password VARCHAR")
+            )
         try:
-            await conn.execute(text("SELECT initial_backfill_done_at FROM fetch_rules LIMIT 0"))
+            await conn.execute(
+                text("SELECT initial_backfill_done_at FROM fetch_rules LIMIT 0")
+            )
         except Exception:
-            await conn.execute(text("ALTER TABLE fetch_rules ADD COLUMN initial_backfill_done_at DATETIME"))
+            await conn.execute(
+                text(
+                    "ALTER TABLE fetch_rules ADD COLUMN initial_backfill_done_at DATETIME"
+                )
+            )
             # Mark existing rules that already have emails as backfilled
-            await conn.execute(text(
-                "UPDATE fetch_rules SET initial_backfill_done_at = CURRENT_TIMESTAMP "
-                "WHERE id IN (SELECT DISTINCT rule_id FROM emails WHERE rule_id IS NOT NULL)"
-            ))
+            await conn.execute(
+                text(
+                    "UPDATE fetch_rules SET initial_backfill_done_at = CURRENT_TIMESTAMP "
+                    "WHERE id IN (SELECT DISTINCT rule_id FROM emails WHERE rule_id IS NOT NULL)"
+                )
+            )
         try:
             await conn.execute(text("SELECT email_id FROM statement_uploads LIMIT 0"))
         except Exception:
-            await conn.execute(text("ALTER TABLE statement_uploads ADD COLUMN email_id INTEGER REFERENCES emails(id)"))
+            await conn.execute(
+                text(
+                    "ALTER TABLE statement_uploads ADD COLUMN email_id INTEGER REFERENCES emails(id)"
+                )
+            )
+        for col in (
+            "payment_status",
+            "payment_sent_offsets",
+            "payment_last_reminded_at",
+            "payment_paid_at",
+        ):
+            try:
+                await conn.execute(text(f"SELECT {col} FROM statement_uploads LIMIT 0"))
+            except Exception:
+                default = " DEFAULT '[]'" if col == "payment_sent_offsets" else ""
+                await conn.execute(
+                    text(
+                        f"ALTER TABLE statement_uploads ADD COLUMN {col} {'TEXT' if 'offsets' in col else 'VARCHAR' if col == 'payment_status' else 'DATETIME'}{default}"
+                    )
+                )
+        try:
+            await conn.execute(
+                text("SELECT payment_paid_amount FROM statement_uploads LIMIT 0")
+            )
+        except Exception:
+            await conn.execute(
+                text(
+                    "ALTER TABLE statement_uploads ADD COLUMN payment_paid_amount NUMERIC(12,2) DEFAULT 0"
+                )
+            )
+        # Backfill: initialize payment tracking for statements created this month
+        await conn.execute(
+            text(
+                "UPDATE statement_uploads SET payment_status = 'unpaid' "
+                "WHERE due_date IS NOT NULL AND due_date != '' "
+                "AND total_amount_due IS NOT NULL AND total_amount_due != '' "
+                "AND payment_status IS NULL "
+                "AND created_at >= date('now', 'start of month')"
+            )
+        )
 
     # Populate in-memory settings cache
     from bank_email_fetcher.settings_service import load_all_settings
+
     await load_all_settings()

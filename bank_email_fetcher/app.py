@@ -98,6 +98,13 @@ async def _poll_loop() -> None:
         except Exception:
             logger.exception("Background poll failed")
 
+        try:
+            from bank_email_fetcher.reminders import check_and_send_reminders
+            if sent := await check_and_send_reminders():
+                logger.info("Sent %d payment reminder(s)", sent)
+        except Exception:
+            logger.exception("Reminder check failed")
+
         from bank_email_fetcher.settings_service import get_setting_int
         interval = max(1, get_setting_int("poll_interval_minutes", 15)) * 60
         await asyncio.sleep(interval)
@@ -1277,6 +1284,9 @@ async def statement_upload(
         await session.commit()
         upload_id = upload.id
 
+    from bank_email_fetcher.reminders import init_payment_tracking
+    await init_payment_tracking(upload_id)
+
     return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
 
 
@@ -1425,6 +1435,9 @@ async def statement_retry(
             upload.status = "imported"
         await session.commit()
 
+    from bank_email_fetcher.reminders import init_payment_tracking
+    await init_payment_tracking(upload_id)
+
     return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
 
 
@@ -1503,6 +1516,9 @@ async def statement_reprocess(upload_id: int):
         upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
         upload.reconciliation_data = reconciliation_to_json(recon)
         await session.commit()
+
+    from bank_email_fetcher.reminders import init_payment_tracking
+    await init_payment_tracking(upload_id)
 
     return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
 

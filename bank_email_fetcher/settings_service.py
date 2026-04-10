@@ -31,52 +31,72 @@ class SettingDef:
 
 SETTINGS_REGISTRY: dict[str, SettingDef] = {
     "telegram.bot_token": SettingDef(
-        default="", data_type="str", category="Telegram",
+        default="",
+        data_type="str",
+        category="Telegram",
         label="Bot Token",
         description="Create a bot via @BotFather on Telegram and paste the token here",
         secret=True,
     ),
     "telegram.chat_id": SettingDef(
-        default="", data_type="int", category="Telegram",
+        default="",
+        data_type="int",
+        category="Telegram",
         label="Chat ID",
         description="Your Telegram chat ID — send /start to @userinfobot to find it",
     ),
     "telegram.enabled": SettingDef(
-        default="false", data_type="bool", category="Telegram",
+        default="false",
+        data_type="bool",
+        category="Telegram",
         label="Enable Telegram Integration",
     ),
     "telegram.notify_transactions": SettingDef(
-        default="true", data_type="bool", category="Telegram",
+        default="true",
+        data_type="bool",
+        category="Telegram",
         label="Transaction Notifications",
         description="Send a message for each new transaction",
     ),
     "telegram.notify_reminders": SettingDef(
-        default="true", data_type="bool", category="Telegram",
+        default="true",
+        data_type="bool",
+        category="Telegram",
         label="Payment Due Reminders",
         description="Send reminders before credit card due dates",
     ),
     "telegram.notify_payment_received": SettingDef(
-        default="true", data_type="bool", category="Telegram",
+        default="true",
+        data_type="bool",
+        category="Telegram",
         label="Payment Received Detection",
         description="Auto-mark reminders as paid when payment emails arrive",
     ),
     "telegram.bulk_threshold": SettingDef(
-        default="5", data_type="int", category="Telegram",
+        default="5",
+        data_type="int",
+        category="Telegram",
         label="Bulk Summary After",
         description="Send a summary instead of individual messages above this count",
     ),
     "telegram.reminder_days_before": SettingDef(
-        default="[7, 3, 1, 0]", data_type="json", category="Telegram",
+        default="[7, 3, 1, 0]",
+        data_type="json",
+        category="Telegram",
         label="Reminder Schedule",
         description="Days before due date to send reminders",
     ),
     "poll_interval_minutes": SettingDef(
-        default="15", data_type="int", category="Polling",
+        default="15",
+        data_type="int",
+        category="Polling",
         label="Poll Interval",
         description="Minutes between email checks",
     ),
     "poll_fetch_limit_per_rule": SettingDef(
-        default="50", data_type="int", category="Polling",
+        default="50",
+        data_type="int",
+        category="Polling",
         label="Fetch Limit Per Rule",
         description="Max emails to fetch per rule per cycle",
     ),
@@ -113,7 +133,7 @@ def get_setting_int(key: str, default: int = 0) -> int:
         return default
     try:
         return int(val)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return default
 
 
@@ -123,7 +143,7 @@ def get_setting_json(key: str, default=None):
         return default
     try:
         return json.loads(val)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return default
 
 
@@ -156,15 +176,17 @@ def get_grouped_settings() -> dict[str, list[dict]]:
         if cat not in grouped:
             grouped[cat] = []
         val = current.get(key, defn.default)
-        grouped[cat].append({
-            "key": key,
-            "value": val if not defn.secret else "",
-            "is_set": bool(val) if defn.secret else None,
-            "label": defn.label,
-            "type": defn.data_type,
-            "description": defn.description,
-            "secret": defn.secret,
-        })
+        grouped[cat].append(
+            {
+                "key": key,
+                "value": val if not defn.secret else "",
+                "is_set": bool(val) if defn.secret else None,
+                "label": defn.label,
+                "type": defn.data_type,
+                "description": defn.description,
+                "secret": defn.secret,
+            }
+        )
     return grouped
 
 
@@ -199,10 +221,14 @@ def parse_form_updates(form: dict) -> tuple[dict[str, str], list[str]]:
                         raw = defn.default
                     else:
                         try:
-                            parts = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                            parts = [
+                                int(x.strip()) for x in raw.split(",") if x.strip()
+                            ]
                             raw = json.dumps(parts)
-                        except (ValueError, TypeError):
-                            errors.append(f"{defn.label}: must be comma-separated numbers")
+                        except ValueError, TypeError:
+                            errors.append(
+                                f"{defn.label}: must be comma-separated numbers"
+                            )
                             continue
                 updates[key] = raw
     return updates, errors
@@ -218,16 +244,18 @@ async def load_all_settings() -> dict[str, str]:
     db_values = {row.key: row.value for row in rows}
 
     # Decrypt secret fields
-    secrets_to_decrypt = {
-        key for key, defn in SETTINGS_REGISTRY.items() if defn.secret
-    }
+    secrets_to_decrypt = {key for key, defn in SETTINGS_REGISTRY.items() if defn.secret}
     for key in secrets_to_decrypt:
         if key in db_values and db_values[key]:
             try:
                 from bank_email_fetcher.config import get_fernet
+
                 db_values[key] = get_fernet().decrypt(db_values[key].encode()).decode()
             except Exception:
-                logger.error("Failed to decrypt setting %s — is EMAIL_SOURCE_MASTER_KEY correct?", key)
+                logger.error(
+                    "Failed to decrypt setting %s — is EMAIL_SOURCE_MASTER_KEY correct?",
+                    key,
+                )
                 db_values[key] = ""
 
     merged: dict[str, str] = {}
@@ -261,6 +289,7 @@ async def save_settings(updates: dict[str, str]) -> set[str]:
             if defn and defn.secret and value:
                 if fernet is None:
                     from bank_email_fetcher.config import get_fernet
+
                     fernet = get_fernet()
                 store_value = fernet.encrypt(value.encode()).decode()
 
@@ -281,6 +310,7 @@ async def start_services() -> None:
     """Start services based on current settings. Idempotent."""
     if is_telegram_configured():
         from bank_email_fetcher.telegram_bot import tg_app, init_telegram
+
         if tg_app is None:
             try:
                 await init_telegram(get_telegram_bot_token())
@@ -291,6 +321,7 @@ async def start_services() -> None:
 async def stop_services() -> None:
     """Stop all managed services."""
     from bank_email_fetcher.telegram_bot import shutdown_telegram
+
     await shutdown_telegram()
 
 

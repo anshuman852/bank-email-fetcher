@@ -48,7 +48,13 @@ from bank_email_parser.api import parse_email
 from bank_email_parser.exceptions import ParseError, UnsupportedEmailTypeError
 
 from bank_email_fetcher.crypto import decrypt_credentials
-from bank_email_fetcher.db import async_session, Email, EmailSource, FetchRule, Transaction
+from bank_email_fetcher.db import (
+    async_session,
+    Email,
+    EmailSource,
+    FetchRule,
+    Transaction,
+)
 from bank_email_fetcher.linker import build_link_context, link_transaction
 
 logger = logging.getLogger(__name__)
@@ -70,6 +76,7 @@ POLL_STATUS = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _save_failed_email(provider: str, message_id: str, raw_bytes: bytes) -> None:
     """Save raw .eml to the failed spool directory for debugging."""
@@ -100,8 +107,9 @@ def _parse_email_date(raw_bytes: bytes) -> datetime.datetime | None:
         return None
     try:
         return email.utils.parsedate_to_datetime(date_str)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
+
 
 def _decode_header_value(raw: str | None) -> str:
     if not raw:
@@ -193,10 +201,12 @@ def _subject_matches(rule_subject: str, actual_subject: str) -> bool:
     return bool(actual) and expected in actual
 
 
-def _matches_rule_filters(rule: FetchRule, *, sender: str | None, subject: str | None) -> bool:
-    return _sender_matches(_clean_rule_value(rule.sender), sender or "") and _subject_matches(
-        _clean_rule_value(rule.subject), subject or ""
-    )
+def _matches_rule_filters(
+    rule: FetchRule, *, sender: str | None, subject: str | None
+) -> bool:
+    return _sender_matches(
+        _clean_rule_value(rule.sender), sender or ""
+    ) and _subject_matches(_clean_rule_value(rule.subject), subject or "")
 
 
 def _format_jmap_from_field(from_field: list[dict] | None) -> str:
@@ -243,6 +253,7 @@ def get_poll_status() -> dict:
 # Gmail (IMAP)
 # ---------------------------------------------------------------------------
 
+
 def _imap_since_date(last_synced_at: datetime.datetime | None) -> str | None:
     """Return IMAP SINCE date string with 2-day margin, or None."""
     if last_synced_at is None:
@@ -251,19 +262,25 @@ def _imap_since_date(last_synced_at: datetime.datetime | None) -> str | None:
     return since.strftime("%d-%b-%Y")
 
 
-def _check_remote_ids_in_db_sync_params(source_id: int, remote_ids: set[str]) -> set[str]:
+def _check_remote_ids_in_db_sync_params(
+    source_id: int, remote_ids: set[str]
+) -> set[str]:
     """Check which remote_ids already exist for a source."""
     from bank_email_fetcher.db import engine as async_engine
     from sqlalchemy import create_engine, text
 
-    sync_url = str(async_engine.url).replace("+aiosqlite", "").replace("sqlite+aiosqlite", "sqlite")
+    sync_url = (
+        str(async_engine.url)
+        .replace("+aiosqlite", "")
+        .replace("sqlite+aiosqlite", "sqlite")
+    )
     sync_engine = create_engine(sync_url)
     existing = set()
     try:
         with sync_engine.connect() as conn:
             batch_list = list(remote_ids)
             for batch_start in range(0, len(batch_list), 500):
-                batch = batch_list[batch_start:batch_start + 500]
+                batch = batch_list[batch_start : batch_start + 500]
                 placeholders = ",".join([f":r{i}" for i in range(len(batch))])
                 params = {"sid": source_id}
                 for i, rid in enumerate(batch):
@@ -335,7 +352,9 @@ def _fetch_gmail_source_sync(
             if needs_backfill:
                 logger.info(
                     "Rule %s (bank=%s, sender=%s) needs initial backfill — skipping SINCE filter",
-                    rule.id, rule.bank, rule.sender,
+                    rule.id,
+                    rule.bank,
+                    rule.sender,
                 )
 
             criteria_parts = []
@@ -381,11 +400,12 @@ def _fetch_gmail_source_sync(
 
             # Batch metadata fetch in chunks of 500
             for batch_start in range(0, len(uids), 500):
-                batch = uids[batch_start:batch_start + 500]
+                batch = uids[batch_start : batch_start + 500]
                 uid_set = b",".join(batch)
                 try:
                     typ, msg_data = conn.uid(
-                        "FETCH", uid_set,
+                        "FETCH",
+                        uid_set,
                         "(X-GM-MSGID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM SUBJECT DATE)])",
                     )
                 except imaplib.IMAP4.error as e:
@@ -400,16 +420,24 @@ def _fetch_gmail_source_sync(
                         header_line = part[0]
                         if isinstance(header_line, bytes):
                             # Extract UID from the response line
-                            uid_match = re.search(rb"^\*\s+\d+\s+FETCH\s+\(UID\s+(\d+)", header_line)
+                            uid_match = re.search(
+                                rb"^\*\s+\d+\s+FETCH\s+\(UID\s+(\d+)", header_line
+                            )
                             m = re.search(rb"X-GM-MSGID\s+(\d+)", header_line)
                             xgm = m.group(1).decode() if m else None
-                            headers_raw = part[1] if len(part) > 1 and isinstance(part[1], bytes) else None
+                            headers_raw = (
+                                part[1]
+                                if len(part) > 1 and isinstance(part[1], bytes)
+                                else None
+                            )
                             if headers_raw:
                                 msg = email_lib.message_from_bytes(headers_raw)
                                 meta = {
                                     "message_id": (msg.get("Message-ID") or "").strip(),
                                     "sender": _decode_header_value(msg.get("From", "")),
-                                    "subject": _decode_header_value(msg.get("Subject", "")),
+                                    "subject": _decode_header_value(
+                                        msg.get("Subject", "")
+                                    ),
                                     "date": _decode_header_value(msg.get("Date", "")),
                                 }
                             else:
@@ -426,7 +454,14 @@ def _fetch_gmail_source_sync(
                                     resp_uid = uid_in_resp.group(1)
 
                             if resp_uid and meta:
-                                remote_id = xgm if xgm else (meta["message_id"] or f"{resp_uid.decode()}:{folder}")
+                                remote_id = (
+                                    xgm
+                                    if xgm
+                                    else (
+                                        meta["message_id"]
+                                        or f"{resp_uid.decode()}:{folder}"
+                                    )
+                                )
                                 uid_meta[(folder, resp_uid)] = (remote_id, meta, xgm)
 
         # Deduplicate by X-GM-MSGID across rules (same message in multiple folders)
@@ -454,7 +489,8 @@ def _fetch_gmail_source_sync(
 
         if candidate_remote_ids:
             existing_remote_ids = _check_remote_ids_in_db_sync_params(
-                source_id, set(candidate_remote_ids.values()),
+                source_id,
+                set(candidate_remote_ids.values()),
             )
         else:
             existing_remote_ids = set()
@@ -542,7 +578,8 @@ def _fetch_gmail_source_sync(
                     ):
                         logger.debug(
                             "Skipping Gmail message %s after local rule filter check for rule %s",
-                            msg_id, rule.id,
+                            msg_id,
+                            rule.id,
                         )
                         continue
                     results_by_rule[rule.id].append((msg_id, remote_id, raw_bytes))
@@ -570,29 +607,42 @@ def _fetch_gmail_source_sync(
 # Fastmail (JMAP)
 # ---------------------------------------------------------------------------
 
+
 def _jmap_request(token: str, url: str, body: dict | None = None) -> dict:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if body:
-        req = Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+        req = Request(
+            url, data=json.dumps(body).encode(), headers=headers, method="POST"
+        )
     else:
         req = Request(url, headers=headers)
     with urlopen(req) as resp:
         return json.loads(resp.read())
 
 
-def _resolve_mailbox_id(token: str, api_url: str, account_id: str, folder_name: str) -> str | None:
+def _resolve_mailbox_id(
+    token: str, api_url: str, account_id: str, folder_name: str
+) -> str | None:
     body = {
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
         "methodCalls": [
-            ["Mailbox/query", {
-                "accountId": account_id,
-                "filter": {"name": folder_name},
-            }, "0"],
-            ["Mailbox/get", {
-                "accountId": account_id,
-                "#ids": {"resultOf": "0", "name": "Mailbox/query", "path": "/ids"},
-                "properties": ["id", "name"],
-            }, "1"],
+            [
+                "Mailbox/query",
+                {
+                    "accountId": account_id,
+                    "filter": {"name": folder_name},
+                },
+                "0",
+            ],
+            [
+                "Mailbox/get",
+                {
+                    "accountId": account_id,
+                    "#ids": {"resultOf": "0", "name": "Mailbox/query", "path": "/ids"},
+                    "properties": ["id", "name"],
+                },
+                "1",
+            ],
         ],
     }
     result = _jmap_request(token, api_url, body)
@@ -652,7 +702,10 @@ def _fetch_fastmail_source_sync(
             if rule.folder:
                 if rule.folder not in mailbox_cache:
                     mailbox_cache[rule.folder] = _resolve_mailbox_id(
-                        token, api_url, account_id, rule.folder,
+                        token,
+                        api_url,
+                        account_id,
+                        rule.folder,
                     )
                 mailbox_id = mailbox_cache[rule.folder]
                 if mailbox_id:
@@ -669,7 +722,9 @@ def _fetch_fastmail_source_sync(
             if needs_backfill:
                 logger.info(
                     "Rule %s (bank=%s, sender=%s) needs initial backfill — skipping date filter",
-                    rule.id, rule.bank, rule.sender,
+                    rule.id,
+                    rule.bank,
+                    rule.sender,
                 )
             elif after_date:
                 jmap_filter["after"] = after_date
@@ -681,18 +736,39 @@ def _fetch_fastmail_source_sync(
                 body = {
                     "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
                     "methodCalls": [
-                        ["Email/query", {
-                            "accountId": account_id,
-                            "filter": jmap_filter,
-                            "sort": [{"property": "receivedAt", "isAscending": False}],
-                            "position": position,
-                            "limit": page_size,
-                        }, "0"],
-                        ["Email/get", {
-                            "accountId": account_id,
-                            "#ids": {"resultOf": "0", "name": "Email/query", "path": "/ids"},
-                            "properties": ["id", "blobId", "receivedAt", "from", "subject", "mailboxIds"],
-                        }, "1"],
+                        [
+                            "Email/query",
+                            {
+                                "accountId": account_id,
+                                "filter": jmap_filter,
+                                "sort": [
+                                    {"property": "receivedAt", "isAscending": False}
+                                ],
+                                "position": position,
+                                "limit": page_size,
+                            },
+                            "0",
+                        ],
+                        [
+                            "Email/get",
+                            {
+                                "accountId": account_id,
+                                "#ids": {
+                                    "resultOf": "0",
+                                    "name": "Email/query",
+                                    "path": "/ids",
+                                },
+                                "properties": [
+                                    "id",
+                                    "blobId",
+                                    "receivedAt",
+                                    "from",
+                                    "subject",
+                                    "mailboxIds",
+                                ],
+                            },
+                            "1",
+                        ],
                     ],
                 }
 
@@ -713,12 +789,19 @@ def _fetch_fastmail_source_sync(
 
                     if mailbox_id and mailbox_id not in em.get("mailboxIds", {}):
                         continue
-                    if not _matches_rule_filters(rule, sender=sender_text, subject=subject_text):
+                    if not _matches_rule_filters(
+                        rule, sender=sender_text, subject=subject_text
+                    ):
                         continue
 
-                    rule_candidates[rule.id].append((
-                        remote_id, em["blobId"], sender_text, subject_text,
-                    ))
+                    rule_candidates[rule.id].append(
+                        (
+                            remote_id,
+                            em["blobId"],
+                            sender_text,
+                            subject_text,
+                        )
+                    )
                     rule_count += 1
 
                 position += len(query_ids)
@@ -732,21 +815,24 @@ def _fetch_fastmail_source_sync(
                 all_remote_ids.add(remote_id)
 
         if all_remote_ids:
-            existing_remote_ids = _check_remote_ids_in_db_sync_params(source_id, all_remote_ids)
+            existing_remote_ids = _check_remote_ids_in_db_sync_params(
+                source_id, all_remote_ids
+            )
         else:
             existing_remote_ids = set()
 
         # Download blobs only for new emails
         for rule in rules:
-            for remote_id, blob_id, sender_text, subject_text in rule_candidates[rule.id]:
+            for remote_id, blob_id, sender_text, subject_text in rule_candidates[
+                rule.id
+            ]:
                 if remote_id in existing_remote_ids:
                     continue
 
                 msg_id = f"src{source_id}:fastmail:{remote_id}"
 
                 blob_url = (
-                    download_url
-                    .replace("{accountId}", account_id)
+                    download_url.replace("{accountId}", account_id)
                     .replace("{blobId}", blob_id)
                     .replace("{type}", "application/octet-stream")
                     .replace("{name}", "email.eml")
@@ -776,6 +862,7 @@ def _fetch_fastmail_source_sync(
 # ---------------------------------------------------------------------------
 # Single-message fetch helpers (for viewing original emails)
 # ---------------------------------------------------------------------------
+
 
 def _fetch_gmail_single_sync(user: str, password: str, remote_id: str) -> bytes | None:
     """Fetch a single email from Gmail by X-GM-MSGID."""
@@ -809,19 +896,24 @@ def _fetch_fastmail_single_sync(token: str, remote_id: str) -> bytes | None:
 
         body = {
             "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-            "methodCalls": [["Email/get", {
-                "accountId": account_id,
-                "ids": [remote_id],
-                "properties": ["blobId"],
-            }, "0"]],
+            "methodCalls": [
+                [
+                    "Email/get",
+                    {
+                        "accountId": account_id,
+                        "ids": [remote_id],
+                        "properties": ["blobId"],
+                    },
+                    "0",
+                ]
+            ],
         }
         result = _jmap_request(token, api_url, body)
         emails = result["methodResponses"][0][1].get("list", [])
         if not emails:
             return None
         blob_url = (
-            download_url
-            .replace("{accountId}", account_id)
+            download_url.replace("{accountId}", account_id)
             .replace("{blobId}", emails[0]["blobId"])
             .replace("{type}", "application/octet-stream")
             .replace("{name}", "email.eml")
@@ -837,6 +929,7 @@ def _fetch_fastmail_single_sync(token: str, remote_id: str) -> bytes | None:
 # ---------------------------------------------------------------------------
 # Processing
 # ---------------------------------------------------------------------------
+
 
 def _process_email(bank: str, raw_bytes: bytes) -> tuple[str | None, dict | None]:
     """Parse raw email bytes. Returns (error, transaction_dict) -- one will be None."""
@@ -874,10 +967,13 @@ def _process_email(bank: str, raw_bytes: bytes) -> tuple[str | None, dict | None
 # Main poll function (called by scheduler)
 # ---------------------------------------------------------------------------
 
+
 async def poll_all() -> dict:
     """Run one full poll cycle across all enabled rules. Returns stats."""
     if POLL_LOCK.locked():
-        logger.info("Poll requested while another poll is already running; skipping overlap")
+        logger.info(
+            "Poll requested while another poll is already running; skipping overlap"
+        )
         return {
             "rules": 0,
             "fetched": 0,
@@ -892,10 +988,16 @@ async def poll_all() -> dict:
         POLL_STATUS["started_at"] = datetime.datetime.utcnow()
         POLL_STATUS["finished_at"] = None
         POLL_STATUS["last_error"] = None
-        POLL_STATUS["progress"] = {"source": "", "rule": "", "email": "", "detail": "Initializing..."}
+        POLL_STATUS["progress"] = {
+            "source": "",
+            "rule": "",
+            "email": "",
+            "detail": "Initializing...",
+        }
 
         stats = {"rules": 0, "fetched": 0, "parsed": 0, "failed": 0, "skipped": 0}
         from bank_email_fetcher.settings_service import get_setting_int
+
         fetch_limit = max(1, get_setting_int("poll_fetch_limit_per_rule", 50))
 
         try:
@@ -936,7 +1038,8 @@ async def poll_all() -> dict:
                     if not source:
                         logger.warning(
                             "Rule %s references source_id=%s which is missing or inactive, skipping",
-                            rule.id, rule.source_id,
+                            rule.id,
+                            rule.source_id,
                         )
                         continue
                     rules_by_source[rule.source_id].append(rule)
@@ -944,7 +1047,8 @@ async def poll_all() -> dict:
                     logger.warning(
                         "Rule %s has no source_id (legacy rule with provider=%s), skipping. "
                         "Please assign an email source to this rule.",
-                        rule.id, rule.provider,
+                        rule.id,
+                        rule.provider,
                     )
 
             total_rules = len(rules)
@@ -961,7 +1065,9 @@ async def poll_all() -> dict:
                 try:
                     creds = decrypt_credentials(source.credentials)
                 except Exception as e:
-                    logger.error("Failed to decrypt credentials for source %s: %s", source_id, e)
+                    logger.error(
+                        "Failed to decrypt credentials for source %s: %s", source_id, e
+                    )
                     continue
 
                 POLL_STATUS["progress"] = {
@@ -975,14 +1081,24 @@ async def poll_all() -> dict:
                     logger.info(
                         "Polling rule %s: source=%s provider=%s bank=%s sender=%s subject=%s "
                         "folder=%s limit=%s",
-                        rule.id, source_id, provider, rule.bank, rule.sender, rule.subject,
-                        rule.folder, fetch_limit,
+                        rule.id,
+                        source_id,
+                        provider,
+                        rule.bank,
+                        rule.sender,
+                        rule.subject,
+                        rule.folder,
+                        fetch_limit,
                     )
 
                 fetch_ok = False
                 backfill_ready_rule_ids: set[int] = set()
                 if provider == "gmail":
-                    results_by_rule, fetch_ok, backfill_ready_rule_ids = await asyncio.to_thread(
+                    (
+                        results_by_rule,
+                        fetch_ok,
+                        backfill_ready_rule_ids,
+                    ) = await asyncio.to_thread(
                         _fetch_gmail_source_sync,
                         source_rules,
                         user=creds.get("user", ""),
@@ -992,7 +1108,11 @@ async def poll_all() -> dict:
                         last_synced_at=source.last_synced_at,
                     )
                 elif provider == "fastmail":
-                    results_by_rule, fetch_ok, backfill_ready_rule_ids = await asyncio.to_thread(
+                    (
+                        results_by_rule,
+                        fetch_ok,
+                        backfill_ready_rule_ids,
+                    ) = await asyncio.to_thread(
                         _fetch_fastmail_source_sync,
                         source_rules,
                         token=creds.get("token", ""),
@@ -1001,7 +1121,9 @@ async def poll_all() -> dict:
                         last_synced_at=source.last_synced_at,
                     )
                 else:
-                    logger.warning("Unknown provider %s for source %s", provider, source_id)
+                    logger.warning(
+                        "Unknown provider %s for source %s", provider, source_id
+                    )
                     continue
 
                 # Process results per rule
@@ -1010,15 +1132,25 @@ async def poll_all() -> dict:
                     new_emails = results_by_rule.get(rule.id, [])
 
                     # Track transactions to notify via Telegram after commit
-                    pending_notifications: list[tuple[int, dict]] = []  # (txn_id, txn_data_for_display)
-                    from bank_email_fetcher.settings_service import should_notify_transactions
+                    pending_notifications: list[
+                        tuple[int, dict]
+                    ] = []  # (txn_id, txn_data_for_display)
+                    pending_payment_checks: list[
+                        tuple[int, int, object]
+                    ] = []  # (txn_id, account_id, amount)
+                    from bank_email_fetcher.settings_service import (
+                        should_notify_transactions,
+                    )
+
                     should_notify = (
                         should_notify_transactions()
                         and getattr(rule, "initial_backfill_done_at", None) is not None
                     )
 
                     total_emails = len(new_emails)
-                    for email_idx, (msg_id, remote_id, raw_bytes) in enumerate(new_emails, 1):
+                    for email_idx, (msg_id, remote_id, raw_bytes) in enumerate(
+                        new_emails, 1
+                    ):
                         if msg_id in inserted_msg_ids:
                             continue
                         inserted_msg_ids.add(msg_id)
@@ -1040,38 +1172,60 @@ async def poll_all() -> dict:
                             subject = metadata.get("subject", "")
                             logger.info(
                                 "Email %s failed parsing (bank=%s, subject=%r), trying statement path",
-                                msg_id, rule.bank, subject[:80],
+                                msg_id,
+                                rule.bank,
+                                subject[:80],
                             )
                             try:
-                                from bank_email_fetcher.statements import process_statement_email
+                                from bank_email_fetcher.statements import (
+                                    process_statement_email,
+                                )
+
                                 stmt_result = await process_statement_email(
-                                    rule.bank, raw_bytes, subject,
+                                    rule.bank,
+                                    raw_bytes,
+                                    subject,
                                     source_id=source_id,
                                 )
                                 if stmt_result is None:
-                                    logger.info("Statement processing returned None for %s (no PDF or subject mismatch)", msg_id)
+                                    logger.info(
+                                        "Statement processing returned None for %s (no PDF or subject mismatch)",
+                                        msg_id,
+                                    )
                             except Exception as stmt_err:
-                                logger.warning("Statement processing error for %s: %s", msg_id, stmt_err)
+                                logger.warning(
+                                    "Statement processing error for %s: %s",
+                                    msg_id,
+                                    stmt_err,
+                                )
 
                         if stmt_result:
                             error = None
                             stats["parsed"] += 1
                             logger.info(
                                 "Processed CC statement from email %s: matched=%d imported=%d",
-                                msg_id, stmt_result["matched"], stmt_result["imported"],
+                                msg_id,
+                                stmt_result["matched"],
+                                stmt_result["imported"],
                             )
                         elif error:
                             try:
                                 _save_failed_email(provider, msg_id, raw_bytes)
                             except Exception as save_err:
-                                logger.warning("Could not save failed email to spool: %s", save_err)
+                                logger.warning(
+                                    "Could not save failed email to spool: %s", save_err
+                                )
 
                         async with async_session() as session:
                             async with session.begin():
                                 if stmt_result:
                                     initial_status = "parsed"
                                 else:
-                                    initial_status = "pending" if txn_data else ("failed" if error else "skipped")
+                                    initial_status = (
+                                        "pending"
+                                        if txn_data
+                                        else ("failed" if error else "skipped")
+                                    )
                                 email_row = Email(
                                     provider=provider,
                                     message_id=msg_id,
@@ -1088,28 +1242,42 @@ async def poll_all() -> dict:
                                 await session.flush()
 
                                 # Link statement upload to this email
-                                if stmt_result and stmt_result.get("statement_upload_id"):
+                                if stmt_result and stmt_result.get(
+                                    "statement_upload_id"
+                                ):
                                     from bank_email_fetcher.db import StatementUpload
-                                    su = await session.get(StatementUpload, stmt_result["statement_upload_id"])
+
+                                    su = await session.get(
+                                        StatementUpload,
+                                        stmt_result["statement_upload_id"],
+                                    )
                                     if su:
                                         su.email_id = email_row.id
 
                                 # Informational-only email types — no funds moved
                                 _SKIP_TXN_TYPES = {"sbi_cc_transaction_declined"}
 
-                                if txn_data and txn_data.get("email_type") in _SKIP_TXN_TYPES:
+                                if (
+                                    txn_data
+                                    and txn_data.get("email_type") in _SKIP_TXN_TYPES
+                                ):
                                     email_row.status = "parsed"
                                     email_row.error = None
                                     stats["parsed"] += 1
                                     if should_notify:
-                                        from bank_email_fetcher.telegram_bot import send_transaction_notification
+                                        from bank_email_fetcher.telegram_bot import (
+                                            send_transaction_notification,
+                                        )
+
                                         # Tag it so the TG message shows "DECLINED"
                                         txn_data["_declined"] = True
                                         pending_notifications.append((0, txn_data))
                                 elif txn_data:
                                     try:
                                         async with session.begin_nested():
-                                            txn_row = Transaction(email_id=email_row.id, **txn_data)
+                                            txn_row = Transaction(
+                                                email_id=email_row.id, **txn_data
+                                            )
                                             session.add(txn_row)
                                             await session.flush()
                                     except IntegrityError as exc:
@@ -1136,15 +1304,31 @@ async def poll_all() -> dict:
                                         link_transaction(_link_ctx, txn_row)
                                         await session.flush()
                                         if should_notify:
-                                            pending_notifications.append((txn_row.id, {
-                                                "bank": txn_row.bank,
-                                                "direction": txn_row.direction,
-                                                "amount": txn_row.amount,
-                                                "counterparty": txn_row.counterparty,
-                                                "transaction_date": txn_row.transaction_date,
-                                                "transaction_time": txn_row.transaction_time,
-                                                "card_mask": txn_row.card_mask,
-                                            }))
+                                            pending_notifications.append(
+                                                (
+                                                    txn_row.id,
+                                                    {
+                                                        "bank": txn_row.bank,
+                                                        "direction": txn_row.direction,
+                                                        "amount": txn_row.amount,
+                                                        "counterparty": txn_row.counterparty,
+                                                        "transaction_date": txn_row.transaction_date,
+                                                        "transaction_time": txn_row.transaction_time,
+                                                        "card_mask": txn_row.card_mask,
+                                                    },
+                                                )
+                                            )
+                                        if (
+                                            txn_row.direction == "credit"
+                                            and txn_row.account_id
+                                        ):
+                                            pending_payment_checks.append(
+                                                (
+                                                    txn_row.id,
+                                                    txn_row.account_id,
+                                                    txn_row.amount,
+                                                )
+                                            )
                                 elif error:
                                     stats["failed"] += 1
                                 else:
@@ -1152,20 +1336,47 @@ async def poll_all() -> dict:
 
                     # Send Telegram notifications AFTER commits (outside DB transaction)
                     if pending_notifications:
-                        from bank_email_fetcher.settings_service import get_telegram_chat_id, get_setting_int
+                        from bank_email_fetcher.settings_service import (
+                            get_telegram_chat_id,
+                            get_setting_int,
+                        )
+
                         _chat_id = get_telegram_chat_id()
                         bulk_threshold = get_setting_int("telegram.bulk_threshold", 5)
                         if len(pending_notifications) <= bulk_threshold:
-                            from bank_email_fetcher.telegram_bot import send_transaction_notification
+                            from bank_email_fetcher.telegram_bot import (
+                                send_transaction_notification,
+                            )
+
                             for txn_id, txn_info in pending_notifications:
-                                await send_transaction_notification(txn_id, txn_info, _chat_id)
+                                await send_transaction_notification(
+                                    txn_id, txn_info, _chat_id
+                                )
                         else:
-                            from bank_email_fetcher.telegram_bot import send_bulk_summary
+                            from bank_email_fetcher.telegram_bot import (
+                                send_bulk_summary,
+                            )
+
                             await send_bulk_summary(
-                                len(pending_notifications), _chat_id,
+                                len(pending_notifications),
+                                _chat_id,
                                 source="email",
                                 txns=pending_notifications,
                             )
+
+                    # Check if any credit transactions satisfy pending payment reminders
+                    if pending_payment_checks:
+                        from bank_email_fetcher.reminders import check_payment_received
+
+                        for txn_id, acct_id, amt in pending_payment_checks:
+                            try:
+                                await check_payment_received(txn_id, acct_id, amt)
+                            except Exception as e:
+                                logger.warning(
+                                    "Payment-received check failed for txn %s: %s",
+                                    txn_id,
+                                    e,
+                                )
 
                 # Mark initial backfill complete only for rules whose search
                 # phase completed AND either produced results or genuinely
@@ -1180,10 +1391,14 @@ async def poll_all() -> dict:
                             if getattr(rule, "initial_backfill_done_at", None) is None:
                                 db_rule = await session.get(FetchRule, rule.id)
                                 if db_rule:
-                                    db_rule.initial_backfill_done_at = datetime.datetime.utcnow()
+                                    db_rule.initial_backfill_done_at = (
+                                        datetime.datetime.utcnow()
+                                    )
                                     logger.info(
                                         "Marked rule %s (bank=%s, sender=%s) as backfill complete",
-                                        rule.id, rule.bank, rule.sender,
+                                        rule.id,
+                                        rule.bank,
+                                        rule.sender,
                                     )
                         await session.commit()
 
@@ -1195,7 +1410,9 @@ async def poll_all() -> dict:
                             src.last_synced_at = datetime.datetime.utcnow()
                             src.last_error = None
                         else:
-                            src.last_error = f"Fetch failed for {provider} source {source_id}"
+                            src.last_error = (
+                                f"Fetch failed for {provider} source {source_id}"
+                            )
                         await session.commit()
 
             logger.info("Poll complete: %s", stats)

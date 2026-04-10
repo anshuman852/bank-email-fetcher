@@ -97,9 +97,9 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
     # Adjustment pairs reference the same Transaction objects already in
     # parsed.transactions / parsed.payments_refunds, so we do NOT re-add them.
     stmt_txns = []
-    for txn in (parsed.transactions or []):
+    for txn in parsed.transactions or []:
         stmt_txns.append(("transactions", "debit", txn))
-    for txn in (parsed.payments_refunds or []):
+    for txn in parsed.payments_refunds or []:
         stmt_txns.append(("payments_refunds", "credit", txn))
 
     # Build DB candidate pool indexed by (date, amount, direction) for fast lookup
@@ -107,7 +107,9 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
     db_pool: dict[tuple, list] = {}
     for db_txn in db_transactions:
         if db_txn.transaction_date and db_txn.amount is not None:
-            key = _match_key(db_txn.transaction_date, Decimal(str(db_txn.amount)), db_txn.direction)
+            key = _match_key(
+                db_txn.transaction_date, Decimal(str(db_txn.amount)), db_txn.direction
+            )
             db_pool.setdefault(key, []).append(db_txn)
 
     matched = []
@@ -117,20 +119,22 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
         try:
             amount = parse_cc_amount(txn.amount)
             txn_date = parse_cc_date(txn.date)
-        except (ValueError, InvalidOperation):
+        except ValueError, InvalidOperation:
             # Can't parse — treat as missing
-            missing.append({
-                "stmt_idx": stmt_idx,
-                "stmt_list": stmt_list,
-                "date": txn.date,
-                "amount": txn.amount,
-                "direction": direction,
-                "narration": txn.narration,
-                "card_number": txn.card_number,
-                "person": txn.person,
-                "imported": False,
-                "imported_txn_id": None,
-            })
+            missing.append(
+                {
+                    "stmt_idx": stmt_idx,
+                    "stmt_list": stmt_list,
+                    "date": txn.date,
+                    "amount": txn.amount,
+                    "direction": direction,
+                    "narration": txn.narration,
+                    "card_number": txn.card_number,
+                    "person": txn.person,
+                    "imported": False,
+                    "imported_txn_id": None,
+                }
+            )
             continue
 
         # Try exact date, then +/-1 day
@@ -143,7 +147,28 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
                 db_txn = candidates.pop(0)  # greedy: take first match
                 if not candidates:
                     del db_pool[key]
-                matched.append({
+                matched.append(
+                    {
+                        "stmt_idx": stmt_idx,
+                        "stmt_list": stmt_list,
+                        "date": txn.date,
+                        "amount": txn.amount,
+                        "direction": direction,
+                        "narration": txn.narration,
+                        "card_number": txn.card_number,
+                        "person": txn.person,
+                        "db_txn_id": db_txn.id,
+                        "db_counterparty": db_txn.counterparty,
+                        "db_reference": db_txn.reference_number,
+                        "db_date": str(db_txn.transaction_date),
+                    }
+                )
+                found = True
+                break
+
+        if not found:
+            missing.append(
+                {
                     "stmt_idx": stmt_idx,
                     "stmt_list": stmt_list,
                     "date": txn.date,
@@ -152,27 +177,10 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
                     "narration": txn.narration,
                     "card_number": txn.card_number,
                     "person": txn.person,
-                    "db_txn_id": db_txn.id,
-                    "db_counterparty": db_txn.counterparty,
-                    "db_reference": db_txn.reference_number,
-                    "db_date": str(db_txn.transaction_date),
-                })
-                found = True
-                break
-
-        if not found:
-            missing.append({
-                "stmt_idx": stmt_idx,
-                "stmt_list": stmt_list,
-                "date": txn.date,
-                "amount": txn.amount,
-                "direction": direction,
-                "narration": txn.narration,
-                "card_number": txn.card_number,
-                "person": txn.person,
-                "imported": False,
-                "imported_txn_id": None,
-            })
+                    "imported": False,
+                    "imported_txn_id": None,
+                }
+            )
 
     return {
         "matched": matched,
@@ -219,7 +227,7 @@ def _calculate_adjustment_total(pairs, direction: str) -> str:
     """Calculate total adjustment amount for high-confidence pairs in given direction."""
     from decimal import Decimal
     from cc_parser.parsers.tokens import parse_amount, format_amount
-    
+
     total = Decimal("0")
     for pair in pairs:
         if pair.confidence == "high":
@@ -227,7 +235,7 @@ def _calculate_adjustment_total(pairs, direction: str) -> str:
                 total += parse_amount(pair.debit.amount or "0")
             elif direction == "credit" and pair.credit:
                 total += parse_amount(pair.credit.amount or "0")
-    
+
     return format_amount(total)
 
 
@@ -311,9 +319,13 @@ def group_recon_by_person(recon: dict) -> list[dict]:
     if len(persons) <= 1:
         return []
 
-    groups: dict[str, dict] = defaultdict(lambda: {
-        "matched": [], "imported": [], "card_numbers": set(),
-    })
+    groups: dict[str, dict] = defaultdict(
+        lambda: {
+            "matched": [],
+            "imported": [],
+            "card_numbers": set(),
+        }
+    )
     for entry_type, entry in all_entries:
         person = entry.get("person") or "Unknown"
         groups[person][entry_type].append(entry)
@@ -326,16 +338,18 @@ def group_recon_by_person(recon: dict) -> list[dict]:
         g = groups[person]
         card_numbers = sorted(g["card_numbers"])
         summary = cs_by_person.get(person)
-        result.append({
-            "person": person,
-            "card_number": card_numbers[0] if card_numbers else None,
-            "matched": g["matched"],
-            "imported": g["imported"],
-            "matched_count": len(g["matched"]),
-            "imported_count": len(g["imported"]),
-            "total_count": len(g["matched"]) + len(g["imported"]),
-            "summary": summary,
-        })
+        result.append(
+            {
+                "person": person,
+                "card_number": card_numbers[0] if card_numbers else None,
+                "matched": g["matched"],
+                "imported": g["imported"],
+                "matched_count": len(g["matched"]),
+                "imported_count": len(g["imported"]),
+                "total_count": len(g["matched"]) + len(g["imported"]),
+                "summary": summary,
+            }
+        )
 
     return result
 
@@ -344,7 +358,13 @@ def group_recon_by_person(recon: dict) -> list[dict]:
 # Email-based statement processing
 # ---------------------------------------------------------------------------
 
-_SKIP_PDF_NAMES = {"most important terms", "mitc", "terms & conditions", "terms and conditions", "tnc"}
+_SKIP_PDF_NAMES = {
+    "most important terms",
+    "mitc",
+    "terms & conditions",
+    "terms and conditions",
+    "tnc",
+}
 
 
 def extract_pdf_from_email(raw_bytes: bytes) -> list[tuple[str, bytes]]:
@@ -391,13 +411,19 @@ async def _find_or_create_account(bank: str, parsed) -> "Account":
     stmt_partial = _extract_digits(parsed.card_number) if not stmt_card_last4 else ""
 
     async with async_session() as session:
-        cc_accounts = (await session.execute(
-            select(Account).where(
-                Account.bank == bank,
-                Account.type == "credit_card",
-                Account.active == True,  # noqa: E712
+        cc_accounts = (
+            (
+                await session.execute(
+                    select(Account).where(
+                        Account.bank == bank,
+                        Account.type == "credit_card",
+                        Account.active == True,  # noqa: E712
+                    )
+                )
             )
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
 
     # Try to match by last-4 of card number
     account = None
@@ -468,7 +494,12 @@ async def _find_or_create_account(bank: str, parsed) -> "Account":
             session.add(card)
         await session.commit()
         await session.refresh(new_account)
-        logger.info("Auto-created account %s (id=%s) for statement card %s", label, new_account.id, card_display)
+        logger.info(
+            "Auto-created account %s (id=%s) for statement card %s",
+            label,
+            new_account.id,
+            card_display,
+        )
         return new_account
 
 
@@ -482,27 +513,48 @@ async def process_statement_email(
 
     Returns a dict with statement_upload_id and stats if successful, None otherwise.
     """
-    from bank_email_fetcher.db import Account, Card, StatementUpload, Transaction, async_session
+    from bank_email_fetcher.db import (
+        Account,
+        Card,
+        StatementUpload,
+        Transaction,
+        async_session,
+    )
     from bank_email_fetcher.linker import build_link_context, link_transaction
 
     # Only process emails whose subject indicates a CC statement
     subject_lower = (email_subject or "").lower()
     if "statement" not in subject_lower:
-        logger.debug("Skipping non-statement email: %r", email_subject[:80] if email_subject else "")
+        logger.debug(
+            "Skipping non-statement email: %r",
+            email_subject[:80] if email_subject else "",
+        )
         return None
     # Reject savings/bank account statements (e.g. "Your Account Statement for the month of …")
     if "account statement" in subject_lower and "card" not in subject_lower:
-        logger.debug("Skipping bank account statement (not CC): %r", email_subject[:80] if email_subject else "")
+        logger.debug(
+            "Skipping bank account statement (not CC): %r",
+            email_subject[:80] if email_subject else "",
+        )
         return None
 
     # Extract PDF attachments
     pdfs = extract_pdf_from_email(raw_bytes)
     if not pdfs:
-        logger.info("Statement email has no PDF attachment: bank=%s subject=%r", bank, email_subject[:80] if email_subject else "")
+        logger.info(
+            "Statement email has no PDF attachment: bank=%s subject=%r",
+            bank,
+            email_subject[:80] if email_subject else "",
+        )
         return None
 
     filename, pdf_bytes = pdfs[0]
-    logger.info("Found PDF attachment in statement email: bank=%s file=%s (%d bytes)", bank, filename, len(pdf_bytes))
+    logger.info(
+        "Found PDF attachment in statement email: bank=%s file=%s (%d bytes)",
+        bank,
+        filename,
+        len(pdf_bytes),
+    )
 
     # Parse the PDF — try without password first, then with stored passwords
     parsed = None
@@ -515,11 +567,22 @@ async def process_statement_email(
 
         # PDF is encrypted — try stored passwords from credit card accounts
         from bank_email_fetcher.config import get_fernet
+
         fernet = get_fernet()
         async with async_session() as session:
-            cc_accounts = (await session.execute(
-                select(Account).where(Account.bank == bank, Account.type == "credit_card", Account.active == True)  # noqa: E712
-            )).scalars().all()
+            cc_accounts = (
+                (
+                    await session.execute(
+                        select(Account).where(
+                            Account.bank == bank,
+                            Account.type == "credit_card",
+                            Account.active == True,
+                        )  # noqa: E712
+                    )
+                )
+                .scalars()
+                .all()
+            )
 
         passwords_to_try = []
         for acc in cc_accounts:
@@ -533,7 +596,11 @@ async def process_statement_email(
         for acc, pw in passwords_to_try:
             try:
                 parsed = await asyncio.to_thread(_parse_pdf_bytes_sync, pdf_bytes, pw)
-                logger.info("Decrypted statement PDF using stored password for %s (%s)", bank, acc.label)
+                logger.info(
+                    "Decrypted statement PDF using stored password for %s (%s)",
+                    bank,
+                    acc.label,
+                )
                 break
             except Exception:
                 continue
@@ -550,14 +617,25 @@ async def process_statement_email(
             if account:
                 async with async_session() as session:
                     upload = StatementUpload(
-                        account_id=account.id, bank=bank, filename=safe_name,
-                        file_path=str(file_path), status="password_required",
+                        account_id=account.id,
+                        bank=bank,
+                        filename=safe_name,
+                        file_path=str(file_path),
+                        status="password_required",
                         error="PDF is encrypted — provide password via Statements page",
                     )
                     session.add(upload)
                     await session.commit()
-                    logger.info("Encrypted CC statement saved for manual password entry: %s", safe_name)
-                    return {"statement_upload_id": upload.id, "matched": 0, "missing": 0, "imported": 0}
+                    logger.info(
+                        "Encrypted CC statement saved for manual password entry: %s",
+                        safe_name,
+                    )
+                    return {
+                        "statement_upload_id": upload.id,
+                        "matched": 0,
+                        "missing": 0,
+                        "imported": 0,
+                    }
             return None
     except Exception as e:
         logger.warning("Failed to parse statement PDF from email: %s", e)
@@ -568,9 +646,15 @@ async def process_statement_email(
 
     # Reconcile
     async with async_session() as session:
-        db_txns = (await session.execute(
-            select(Transaction).where(Transaction.account_id == account.id)
-        )).scalars().all()
+        db_txns = (
+            (
+                await session.execute(
+                    select(Transaction).where(Transaction.account_id == account.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     recon = reconcile_statement(parsed, db_txns, account.id)
 
@@ -606,9 +690,11 @@ async def process_statement_email(
 
         # Build a lookup to resolve partial card digits (e.g. SBI "67" → "0567")
         # against cards registered for this account.
-        acct_cards = (await session.execute(
-            select(Card).where(Card.account_id == account.id)
-        )).scalars().all()
+        acct_cards = (
+            (await session.execute(select(Card).where(Card.account_id == account.id)))
+            .scalars()
+            .all()
+        )
         _card_l4s = [last4_from_card(c.card_mask) for c in acct_cards]
         _card_l4s = [v for v in _card_l4s if v]
 
@@ -629,7 +715,7 @@ async def process_statement_email(
             try:
                 amount = parse_cc_amount(entry["amount"])
                 txn_date = parse_cc_date(entry["date"])
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 continue
 
             resolved_mask = _resolve_card_mask(entry.get("card_number"))
@@ -656,15 +742,20 @@ async def process_statement_email(
             entry["imported"] = True
             entry["imported_txn_id"] = txn.id
             imported += 1
-            imported_txns.append((txn.id, {
-                "bank": txn.bank,
-                "direction": txn.direction,
-                "amount": txn.amount,
-                "counterparty": txn.counterparty,
-                "transaction_date": txn.transaction_date,
-                "transaction_time": txn.transaction_time,
-                "card_mask": txn.card_mask,
-            }))
+            imported_txns.append(
+                (
+                    txn.id,
+                    {
+                        "bank": txn.bank,
+                        "direction": txn.direction,
+                        "amount": txn.amount,
+                        "counterparty": txn.counterparty,
+                        "transaction_date": txn.transaction_date,
+                        "transaction_time": txn.transaction_time,
+                        "card_mask": txn.card_mask,
+                    },
+                )
+            )
 
         upload.imported_count = imported
         upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
@@ -676,27 +767,47 @@ async def process_statement_email(
         await session.commit()
 
         # Telegram notifications for imported transactions
-        from bank_email_fetcher.settings_service import should_notify_transactions, get_telegram_chat_id, get_setting_int
+        from bank_email_fetcher.settings_service import (
+            should_notify_transactions,
+            get_telegram_chat_id,
+            get_setting_int,
+        )
+
         if imported_txns and should_notify_transactions():
             chat_id = get_telegram_chat_id()
             bulk_threshold = get_setting_int("telegram.bulk_threshold", 5)
             if len(imported_txns) <= bulk_threshold:
-                from bank_email_fetcher.telegram_bot import send_transaction_notification
+                from bank_email_fetcher.telegram_bot import (
+                    send_transaction_notification,
+                )
+
                 for txn_id, txn_info in imported_txns:
                     await send_transaction_notification(txn_id, txn_info, chat_id)
             else:
                 from bank_email_fetcher.telegram_bot import send_bulk_summary
+
                 await send_bulk_summary(
-                    len(imported_txns), chat_id,
+                    len(imported_txns),
+                    chat_id,
                     account_label=account.label,
                     source="cc_statement",
                     txns=imported_txns,
                 )
 
         enriched = await enrich_matched_transactions(recon)
+
+        from bank_email_fetcher.reminders import init_payment_tracking
+
+        await init_payment_tracking(upload.id)
+
         logger.info(
             "Processed statement email: bank=%s account=%s matched=%d missing=%d imported=%d enriched=%d",
-            bank, account.label, len(recon["matched"]), len(recon["missing"]), imported, enriched,
+            bank,
+            account.label,
+            len(recon["matched"]),
+            len(recon["missing"]),
+            imported,
+            enriched,
         )
         return {
             "statement_upload_id": upload.id,
