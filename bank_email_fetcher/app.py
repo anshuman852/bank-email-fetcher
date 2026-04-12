@@ -1503,7 +1503,7 @@ async def reparse_all_failed():
             continue
 
         raw_bytes = spool_path.read_bytes()
-        error, txn_data = _process_email(rule.bank, raw_bytes)
+        error, txn_data, _ = _process_email(rule.bank, raw_bytes)
 
         stmt_result = None
         if error and not txn_data:
