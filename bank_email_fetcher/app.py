@@ -545,7 +545,7 @@ async def email_list(
 
         # Pagination
         total_count = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
-        failed_count = (await session.execute(select(func.count(Email.id)).where(Email.status == "error"))).scalar() or 0
+        failed_count = (await session.execute(select(func.count(Email.id)).where(Email.status == "failed"))).scalar() or 0
         total_pages = max(1, (total_count + page_size - 1) // page_size)
         page = max(1, min(page, total_pages))
         offset = (page - 1) * page_size
@@ -1479,7 +1479,7 @@ async def reparse_all_failed():
 
     async with async_session() as session:
         failed_emails = (
-            await session.execute(select(Email).where(Email.status == "error"))
+            await session.execute(select(Email).where(Email.status == "failed"))
         ).scalars().all()
 
     for email_row in failed_emails:
