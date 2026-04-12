@@ -24,7 +24,9 @@ http_basic = HTTPBasic(auto_error=False)
 
 
 @lru_cache
-def _get_trusted_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+def _get_trusted_networks() -> tuple[
+    ipaddress.IPv4Network | ipaddress.IPv6Network, ...
+]:
     networks = []
     for cidr in (s.strip() for s in settings.auth_skip_cidrs.split(",") if s.strip()):
         try:

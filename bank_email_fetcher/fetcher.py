@@ -931,36 +931,43 @@ def _fetch_fastmail_single_sync(token: str, remote_id: str) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
-def _process_email(bank: str, raw_bytes: bytes) -> tuple[str | None, dict | None]:
-    """Parse raw email bytes. Returns (error, transaction_dict) -- one will be None."""
+def _process_email(
+    bank: str, raw_bytes: bytes
+) -> tuple[str | None, dict | None, str | None]:
+    """Parse raw email bytes. Returns (error, txn_dict, password_hint)."""
     html = _extract_html_body(raw_bytes)
     if not html:
         html = _extract_text_body(raw_bytes)
     if not html:
-        return "No HTML or text body found in email", None
+        return "No HTML or text body found in email", None, None
 
     try:
         parsed = parse_email(bank, html)
     except (ParseError, UnsupportedEmailTypeError) as e:
-        return str(e), None
+        return str(e), None, None
 
-    txn = parsed.transaction
-    return None, {
-        "bank": parsed.bank,
-        "email_type": parsed.email_type,
-        "direction": txn.direction,
-        "amount": float(txn.amount.amount),
-        "currency": txn.amount.currency,
-        "transaction_date": txn.transaction_date,
-        "transaction_time": txn.transaction_time,
-        "counterparty": txn.counterparty,
-        "card_mask": txn.card_mask,
-        "account_mask": txn.account_mask,
-        "reference_number": txn.reference_number,
-        "channel": txn.channel,
-        "balance": float(txn.balance.amount) if txn.balance else None,
-        "raw_description": txn.raw_description,
-    }
+    if (txn := parsed.transaction) is None:
+        return None, None, parsed.password_hint
+    return (
+        None,
+        {
+            "bank": parsed.bank,
+            "email_type": parsed.email_type,
+            "direction": txn.direction,
+            "amount": float(txn.amount.amount),
+            "currency": txn.amount.currency,
+            "transaction_date": txn.transaction_date,
+            "transaction_time": txn.transaction_time,
+            "counterparty": txn.counterparty,
+            "card_mask": txn.card_mask,
+            "account_mask": txn.account_mask,
+            "reference_number": txn.reference_number,
+            "channel": txn.channel,
+            "balance": float(txn.balance.amount) if txn.balance else None,
+            "raw_description": txn.raw_description,
+        },
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1008,7 +1015,7 @@ async def poll_all() -> dict:
 
             async with async_session() as session:
                 result = await session.execute(
-                    select(FetchRule).where(FetchRule.enabled == True)  # noqa: E712
+                    select(FetchRule).where(FetchRule.enabled.is_(True))
                 )
                 rules = result.scalars().all()
 
@@ -1019,7 +1026,7 @@ async def poll_all() -> dict:
 
             async with async_session() as session:
                 result = await session.execute(
-                    select(EmailSource).where(EmailSource.active == True)  # noqa: E712
+                    select(EmailSource).where(EmailSource.active.is_(True))
                 )
                 sources_by_id = {src.id: src for src in result.scalars().all()}
 
@@ -1164,18 +1171,40 @@ async def poll_all() -> dict:
                         metadata = _extract_message_metadata(raw_bytes)
                         received_at = _parse_email_date(raw_bytes)
 
-                        error, txn_data = _process_email(rule.bank, raw_bytes)
+                        email_kind = getattr(rule, "email_kind", None)
 
-                        # If parsing failed, try processing as a CC statement
+                        # Decide processing path based on rule.email_kind:
+                        #   "statement"   -> skip transaction parsing, go straight to statements
+                        #   "transaction" -> only try transaction parsing, no statement fallback
+                        #   None          -> try transaction first, fall back to statements (legacy)
+                        error = None
+                        txn_data = None
                         stmt_result = None
-                        if error and not txn_data:
+
+                        password_hint = None
+                        if email_kind != "statement":
+                            error, txn_data, password_hint = _process_email(
+                                rule.bank, raw_bytes
+                            )
+
+                        # Statement pipeline: try CC then bank account statement
+                        # Triggers when: explicit statement rule, parse failure, or
+                        # parse succeeded but found a statement email (no transaction)
+                        should_try_statement = email_kind == "statement" or (
+                            email_kind is None and not txn_data
+                        )
+                        if should_try_statement:
                             subject = metadata.get("subject", "")
                             logger.info(
-                                "Email %s failed parsing (bank=%s, subject=%r), trying statement path",
+                                "Email %s %s (bank=%s, subject=%r), trying statement path",
                                 msg_id,
+                                "routed to statement pipeline"
+                                if email_kind == "statement"
+                                else "failed parsing",
                                 rule.bank,
                                 subject[:80],
                             )
+                            # Try CC statement first
                             try:
                                 from bank_email_fetcher.statements import (
                                     process_statement_email,
@@ -1187,23 +1216,54 @@ async def poll_all() -> dict:
                                     subject,
                                     source_id=source_id,
                                 )
-                                if stmt_result is None:
-                                    logger.info(
-                                        "Statement processing returned None for %s (no PDF or subject mismatch)",
-                                        msg_id,
-                                    )
                             except Exception as stmt_err:
                                 logger.warning(
-                                    "Statement processing error for %s: %s",
+                                    "CC statement processing error for %s: %s",
                                     msg_id,
                                     stmt_err,
                                 )
 
+                            # If CC statement didn't match, try bank account statement
+                            if stmt_result is None:
+                                try:
+                                    from bank_email_fetcher.bank_statements import (
+                                        process_bank_statement_email,
+                                    )
+
+                                    stmt_result = await process_bank_statement_email(
+                                        rule.bank,
+                                        raw_bytes,
+                                        subject,
+                                        source_id=source_id,
+                                        password_hint=password_hint,
+                                    )
+                                except Exception as stmt_err:
+                                    logger.warning(
+                                        "Bank statement processing error for %s: %s",
+                                        msg_id,
+                                        stmt_err,
+                                    )
+
+                            if stmt_result is None:
+                                logger.info(
+                                    "Statement processing returned None for %s (no PDF or subject mismatch)",
+                                    msg_id,
+                                )
+                                # For statement-only rules, set error if no result
+                                if email_kind == "statement":
+                                    error = "Statement processing returned no result"
+
                         if stmt_result:
                             error = None
                             stats["parsed"] += 1
+                            stmt_type = (
+                                "bank"
+                                if stmt_result.get("bank_statement_upload_id")
+                                else "CC"
+                            )
                             logger.info(
-                                "Processed CC statement from email %s: matched=%d imported=%d",
+                                "Processed %s statement from email %s: matched=%d imported=%d",
+                                stmt_type,
                                 msg_id,
                                 stmt_result["matched"],
                                 stmt_result["imported"],
@@ -1250,6 +1310,19 @@ async def poll_all() -> dict:
                                     su = await session.get(
                                         StatementUpload,
                                         stmt_result["statement_upload_id"],
+                                    )
+                                    if su:
+                                        su.email_id = email_row.id
+                                elif stmt_result and stmt_result.get(
+                                    "bank_statement_upload_id"
+                                ):
+                                    from bank_email_fetcher.db import (
+                                        BankStatementUpload,
+                                    )
+
+                                    su = await session.get(
+                                        BankStatementUpload,
+                                        stmt_result["bank_statement_upload_id"],
                                     )
                                     if su:
                                         su.email_id = email_row.id

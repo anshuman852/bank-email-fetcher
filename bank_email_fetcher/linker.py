@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # Core helper
 # ---------------------------------------------------------------------------
 
+
 def _last4(mask: str) -> str:
     """Return the last 4 digit characters of any mask string.
 
@@ -81,6 +82,7 @@ def _last4(mask: str) -> str:
 # ---------------------------------------------------------------------------
 # Link context (preloaded lookup tables)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class LinkContext:
@@ -154,6 +156,7 @@ async def build_link_context(session: AsyncSession) -> LinkContext:
 # Single-transaction linker
 # ---------------------------------------------------------------------------
 
+
 def link_transaction(ctx: LinkContext, txn: Transaction) -> bool:
     """Attempt to set account_id (and card_id) on *txn* using *ctx*.
 
@@ -195,7 +198,11 @@ def link_transaction(ctx: LinkContext, txn: Transaction) -> bool:
             txn.card_id = card_id
             logger.debug(
                 "txn %s: linked via cards table (mask=%r -> last4=%s, account=%s card=%s)",
-                txn.id, txn.card_mask, digits, acct_id, card_id,
+                txn.id,
+                txn.card_mask,
+                digits,
+                acct_id,
+                card_id,
             )
             return True
 
@@ -206,7 +213,10 @@ def link_transaction(ctx: LinkContext, txn: Transaction) -> bool:
             txn.account_id = ctx.account_by_last4[digits]
             logger.debug(
                 "txn %s: linked via accounts table by card_mask (mask=%r -> last4=%s, account=%s)",
-                txn.id, txn.card_mask, digits, txn.account_id,
+                txn.id,
+                txn.card_mask,
+                digits,
+                txn.account_id,
             )
             return True
 
@@ -217,7 +227,10 @@ def link_transaction(ctx: LinkContext, txn: Transaction) -> bool:
             txn.account_id = ctx.account_by_last4[digits]
             logger.debug(
                 "txn %s: linked via accounts table by account_mask (mask=%r -> last4=%s, account=%s)",
-                txn.id, txn.account_mask, digits, txn.account_id,
+                txn.id,
+                txn.account_mask,
+                digits,
+                txn.account_id,
             )
             return True
 
@@ -239,24 +252,34 @@ def link_transaction(ctx: LinkContext, txn: Transaction) -> bool:
             txn.account_id = acct_ids[0]
             logger.debug(
                 "txn %s: linked via bank-only fallback (bank=%r, account=%s)",
-                txn.id, txn.bank, txn.account_id,
+                txn.id,
+                txn.bank,
+                txn.account_id,
             )
             return True
         if len(acct_ids) > 1:
             logger.warning(
                 "txn %s: bank-only fallback skipped -- %d accounts for bank %r "
                 "(no card_mask / account_mask; leaving unlinked to avoid wrong attribution)",
-                txn.id, len(acct_ids), txn.bank,
+                txn.id,
+                len(acct_ids),
+                txn.bank,
             )
 
-    logger.debug("txn %s: no link found (bank=%r card_mask=%r account_mask=%r)",
-                 txn.id, txn.bank, txn.card_mask, txn.account_mask)
+    logger.debug(
+        "txn %s: no link found (bank=%r card_mask=%r account_mask=%r)",
+        txn.id,
+        txn.bank,
+        txn.card_mask,
+        txn.account_mask,
+    )
     return False
 
 
 # ---------------------------------------------------------------------------
 # Convenience: relink all orphans in one shot
 # ---------------------------------------------------------------------------
+
 
 async def relink_orphans(session: AsyncSession) -> tuple[int, int]:
     """Link every unlinked transaction in the DB.
@@ -268,22 +291,31 @@ async def relink_orphans(session: AsyncSession) -> tuple[int, int]:
     ctx = await build_link_context(session)
 
     orphans = (
-        await session.execute(
-            select(Transaction).where(Transaction.account_id.is_(None))
+        (
+            await session.execute(
+                select(Transaction).where(Transaction.account_id.is_(None))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     linked = sum(1 for txn in orphans if link_transaction(ctx, txn))
     await session.commit()
 
     remaining = (
-        await session.execute(
-            select(Transaction).where(Transaction.account_id.is_(None))
+        (
+            await session.execute(
+                select(Transaction).where(Transaction.account_id.is_(None))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     logger.info(
         "relink_orphans: linked %d, %d still unlinked",
-        linked, len(remaining),
+        linked,
+        len(remaining),
     )
     return linked, len(remaining)

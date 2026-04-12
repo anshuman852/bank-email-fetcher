@@ -22,12 +22,21 @@ import asyncio
 import imaplib
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request as FastAPIRequest, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Request as FastAPIRequest,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -38,7 +47,18 @@ from bank_email_fetcher.deps import verify_credentials
 from bank_email_fetcher.crypto import encrypt_credentials, decrypt_credentials
 from urllib.parse import urlencode
 
-from bank_email_fetcher.db import Account, Card, Email, EmailSource, FetchRule, StatementUpload, Transaction, async_session, init_db
+from bank_email_fetcher.db import (
+    Account,
+    BankStatementUpload,
+    Card,
+    Email,
+    EmailSource,
+    FetchRule,
+    StatementUpload,
+    Transaction,
+    async_session,
+    init_db,
+)
 from bank_email_fetcher.fetcher import (
     get_poll_status,
     poll_all,
@@ -100,12 +120,14 @@ async def _poll_loop() -> None:
 
         try:
             from bank_email_fetcher.reminders import check_and_send_reminders
+
             if sent := await check_and_send_reminders():
                 logger.info("Sent %d payment reminder(s)", sent)
         except Exception:
             logger.exception("Reminder check failed")
 
         from bank_email_fetcher.settings_service import get_setting_int
+
         interval = max(1, get_setting_int("poll_interval_minutes", 15)) * 60
         await asyncio.sleep(interval)
 
@@ -144,7 +166,9 @@ app = FastAPI(
     lifespan=lifespan,
     dependencies=[Depends(verify_credentials)],
 )
-app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+app.mount(
+    "/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static"
+)
 
 api_router = APIRouter(prefix="/api")
 
@@ -153,6 +177,7 @@ api_router = APIRouter(prefix="/api")
 # Dashboard
 # ---------------------------------------------------------------------------
 
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: FastAPIRequest):
     today = date.today()
@@ -160,46 +185,76 @@ async def dashboard(request: FastAPIRequest):
 
     async with async_session() as session:
         # Month-to-date financial stats
-        row = (await session.execute(
-            select(
-                func.count(Transaction.id),
-                func.coalesce(func.sum(case((Transaction.direction == "debit", Transaction.amount), else_=0)), 0),
-                func.coalesce(func.sum(case((Transaction.direction == "credit", Transaction.amount), else_=0)), 0),
-            ).where(Transaction.transaction_date >= month_start)
-        )).one()
+        row = (
+            await session.execute(
+                select(
+                    func.count(Transaction.id),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (Transaction.direction == "debit", Transaction.amount),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (Transaction.direction == "credit", Transaction.amount),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ),
+                ).where(Transaction.transaction_date >= month_start)
+            )
+        ).one()
         month_txns, month_debit, month_credit = row
         net_flow = month_credit - month_debit
 
         # Operational stats
-        total_emails = (await session.execute(select(func.count(Email.id)))).scalar() or 0
-        active_rules = (await session.execute(
-            select(func.count(FetchRule.id)).where(FetchRule.enabled == True)  # noqa: E712
-        )).scalar() or 0
+        total_emails = (
+            await session.execute(select(func.count(Email.id)))
+        ).scalar() or 0
+        active_rules = (
+            await session.execute(
+                select(func.count(FetchRule.id)).where(FetchRule.enabled.is_(True))
+            )
+        ).scalar() or 0
 
         # Recent transactions
         result = await session.execute(
-            select(Transaction).order_by(Transaction.transaction_date.desc().nullslast(), Transaction.id.desc()).limit(20)
+            select(Transaction)
+            .order_by(
+                Transaction.transaction_date.desc().nullslast(), Transaction.id.desc()
+            )
+            .limit(20)
         )
         transactions = result.scalars().all()
 
     period_label = month_start.strftime("%B %Y")
 
-    return templates.TemplateResponse(request, "dashboard.html", {
-        "active_page": "dashboard",
-        "poll_status": get_poll_status(),
-        "stats": {
-            "month_debit": month_debit,
-            "month_credit": month_credit,
-            "month_transactions": month_txns,
-            "net_flow": net_flow,
-            "period_label": period_label,
+    return templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        {
+            "active_page": "dashboard",
+            "poll_status": get_poll_status(),
+            "stats": {
+                "month_debit": month_debit,
+                "month_credit": month_credit,
+                "month_transactions": month_txns,
+                "net_flow": net_flow,
+                "period_label": period_label,
+            },
+            "ops_stats": {
+                "total_emails": total_emails,
+                "active_rules": active_rules,
+            },
+            "transactions": transactions,
         },
-        "ops_stats": {
-            "total_emails": total_emails,
-            "active_rules": active_rules,
-        },
-        "transactions": transactions,
-    })
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -248,12 +303,16 @@ async def transaction_list(
             stmt = stmt.where(Transaction.direction == direction)
         if date_from:
             try:
-                stmt = stmt.where(Transaction.transaction_date >= date.fromisoformat(date_from))
+                stmt = stmt.where(
+                    Transaction.transaction_date >= date.fromisoformat(date_from)
+                )
             except ValueError:
                 pass
         if date_to:
             try:
-                stmt = stmt.where(Transaction.transaction_date <= date.fromisoformat(date_to))
+                stmt = stmt.where(
+                    Transaction.transaction_date <= date.fromisoformat(date_to)
+                )
             except ValueError:
                 pass
 
@@ -285,30 +344,56 @@ async def transaction_list(
         bank_result = await session.execute(select(Transaction.bank).distinct())
         banks = sorted([row[0] for row in bank_result.all()])
 
-        accounts = (await session.execute(
-            select(Account).where(Account.active == True).order_by(Account.bank, Account.label)  # noqa: E712
-        )).scalars().all()
+        accounts = (
+            (
+                await session.execute(
+                    select(Account)
+                    .where(Account.active.is_(True))
+                    .order_by(Account.bank, Account.label)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
-        cards = (await session.execute(
-            select(Card).where(Card.active == True).order_by(Card.card_mask)  # noqa: E712
-        )).scalars().all()
+        cards = (
+            (
+                await session.execute(
+                    select(Card).where(Card.active.is_(True)).order_by(Card.card_mask)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     # Build JSON for dependent dropdowns
     cards_by_account: dict[int, list] = {}
     for c in cards:
-        cards_by_account.setdefault(c.account_id, []).append({
-            "id": c.id, "mask": c.card_mask, "label": c.label or c.card_mask,
-        })
+        cards_by_account.setdefault(c.account_id, []).append(
+            {
+                "id": c.id,
+                "mask": c.card_mask,
+                "label": c.label or c.card_mask,
+            }
+        )
     accounts_by_bank: dict[str, list] = {}
     for a in accounts:
-        accounts_by_bank.setdefault(a.bank, []).append({
-            "id": a.id, "label": a.label, "type": a.type,
-        })
+        accounts_by_bank.setdefault(a.bank, []).append(
+            {
+                "id": a.id,
+                "label": a.label,
+                "type": a.type,
+            }
+        )
 
     # Build base query string for pagination/sort links
     filters = {
-        "bank": bank, "account_id": account_id, "card_id": card_id,
-        "direction": direction, "date_from": date_from, "date_to": date_to,
+        "bank": bank,
+        "account_id": account_id,
+        "card_id": card_id,
+        "direction": direction,
+        "date_from": date_from,
+        "date_to": date_to,
     }
     base_qs = urlencode({k: v for k, v in filters.items() if v})
 
@@ -321,28 +406,33 @@ async def transaction_list(
             pages.add(p)
         return sorted(pages)
 
-    return templates.TemplateResponse(request, "transactions.html", {
-        "active_page": "transactions",
-        "transactions": transactions,
-        "banks": banks,
-        "accounts": accounts,
-        "accounts_json": json.dumps(accounts_by_bank),
-        "cards_json": json.dumps(cards_by_account),
-        "filters": filters,
-        "sort": sort,
-        "order": order,
-        "page": page,
-        "total_count": total_count,
-        "total_pages": total_pages,
-        "page_size": PAGE_SIZE,
-        "page_window": page_window(),
-        "base_qs": base_qs,
-    })
+    return templates.TemplateResponse(
+        request,
+        "transactions.html",
+        {
+            "active_page": "transactions",
+            "transactions": transactions,
+            "banks": banks,
+            "accounts": accounts,
+            "accounts_json": json.dumps(accounts_by_bank),
+            "cards_json": json.dumps(cards_by_account),
+            "filters": filters,
+            "sort": sort,
+            "order": order,
+            "page": page,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "page_size": PAGE_SIZE,
+            "page_window": page_window(),
+            "base_qs": base_qs,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # Transaction Notes
 # ---------------------------------------------------------------------------
+
 
 @api_router.post("/transactions/{txn_id}/note")
 async def update_note(txn_id: int, request: FastAPIRequest):
@@ -361,6 +451,7 @@ async def update_note(txn_id: int, request: FastAPIRequest):
 # Transaction Detail
 # ---------------------------------------------------------------------------
 
+
 @app.get("/transactions/{txn_id}/detail", response_class=HTMLResponse)
 async def transaction_detail(txn_id: int, request: FastAPIRequest):
     async with async_session() as session:
@@ -374,16 +465,21 @@ async def transaction_detail(txn_id: int, request: FastAPIRequest):
         if not row:
             return HTMLResponse("<p>Transaction not found.</p>", 404)
         txn, email, account = row
-    return templates.TemplateResponse(request, "partials/transaction_detail.html", {
-        "txn": txn,
-        "email": email,
-        "account": account,
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/transaction_detail.html",
+        {
+            "txn": txn,
+            "email": email,
+            "account": account,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # Emails
 # ---------------------------------------------------------------------------
+
 
 @app.get("/emails", response_class=HTMLResponse)
 async def email_list(request: FastAPIRequest):
@@ -393,15 +489,20 @@ async def email_list(request: FastAPIRequest):
         )
         emails = result.scalars().all()
 
-    return templates.TemplateResponse(request, "emails.html", {
-        "active_page": "emails",
-        "emails": emails,
-    })
+    return templates.TemplateResponse(
+        request,
+        "emails.html",
+        {
+            "active_page": "emails",
+            "emails": emails,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # Email Detail
 # ---------------------------------------------------------------------------
+
 
 @app.get("/emails/{email_id}/detail", response_class=HTMLResponse)
 async def email_detail(email_id: int, request: FastAPIRequest):
@@ -415,15 +516,20 @@ async def email_detail(email_id: int, request: FastAPIRequest):
         if not row:
             return HTMLResponse("<p>Email not found.</p>", 404)
         email_row, txn = row
-    return templates.TemplateResponse(request, "partials/email_detail.html", {
-        "email": email_row,
-        "txn": txn,
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/email_detail.html",
+        {
+            "email": email_row,
+            "txn": txn,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # View Original Email
 # ---------------------------------------------------------------------------
+
 
 @app.get("/emails/{email_id}/original", response_class=HTMLResponse)
 async def view_original_email(email_id: int):
@@ -439,7 +545,10 @@ async def view_original_email(email_id: int):
 
     if source.provider == "gmail":
         raw = await asyncio.to_thread(
-            _fetch_gmail_single_sync, creds["user"], creds["app_password"], email_row.remote_id
+            _fetch_gmail_single_sync,
+            creds["user"],
+            creds["app_password"],
+            email_row.remote_id,
         )
     elif source.provider == "fastmail":
         raw = await asyncio.to_thread(
@@ -456,7 +565,12 @@ async def view_original_email(email_id: int):
         # Fallback to plain text
         text_body = _extract_text_body(raw)
         import html
-        html_body = f"<pre>{html.escape(text_body)}</pre>" if text_body else "<p>No content.</p>"
+
+        html_body = (
+            f"<pre>{html.escape(text_body)}</pre>"
+            if text_body
+            else "<p>No content.</p>"
+        )
 
     # Return with restrictive headers
     return HTMLResponse(
@@ -473,6 +587,7 @@ async def view_original_email(email_id: int):
 # ---------------------------------------------------------------------------
 # Accounts
 # ---------------------------------------------------------------------------
+
 
 async def auto_link_transactions(session, account):
     """Link orphan transactions to a newly created/updated account.
@@ -495,7 +610,6 @@ async def auto_link_transactions(session, account):
     await session.commit()
 
 
-
 @app.get("/accounts", response_class=HTMLResponse)
 async def account_list(request: FastAPIRequest):
     async with async_session() as session:
@@ -506,11 +620,15 @@ async def account_list(request: FastAPIRequest):
         bank_result = await session.execute(select(Transaction.bank).distinct())
         banks = sorted([row[0] for row in bank_result.all() if row[0]])
 
-    return templates.TemplateResponse(request, "accounts.html", {
-        "active_page": "accounts",
-        "accounts": accounts,
-        "banks": banks,
-    })
+    return templates.TemplateResponse(
+        request,
+        "accounts.html",
+        {
+            "active_page": "accounts",
+            "accounts": accounts,
+            "banks": banks,
+        },
+    )
 
 
 @app.post("/accounts")
@@ -553,16 +671,23 @@ async def account_edit_form(request: FastAPIRequest, account_id: int):
     if account.statement_password:
         try:
             from bank_email_fetcher.config import get_fernet
-            statement_password_plain = get_fernet().decrypt(account.statement_password.encode()).decode()
+
+            statement_password_plain = (
+                get_fernet().decrypt(account.statement_password.encode()).decode()
+            )
         except Exception:
             pass
 
-    return templates.TemplateResponse(request, "account_edit.html", {
-        "active_page": "accounts",
-        "account": account,
-        "banks": banks,
-        "statement_password_plain": statement_password_plain,
-    })
+    return templates.TemplateResponse(
+        request,
+        "account_edit.html",
+        {
+            "active_page": "accounts",
+            "account": account,
+            "banks": banks,
+            "statement_password_plain": statement_password_plain,
+        },
+    )
 
 
 @app.post("/accounts/{account_id}/edit")
@@ -588,7 +713,10 @@ async def account_update(
         # Encrypt and store statement password
         if statement_password.strip():
             from bank_email_fetcher.config import get_fernet
-            account.statement_password = get_fernet().encrypt(statement_password.strip().encode()).decode()
+
+            account.statement_password = (
+                get_fernet().encrypt(statement_password.strip().encode()).decode()
+            )
         elif not statement_password:
             account.statement_password = None
 
@@ -619,7 +747,12 @@ async def account_delete(account_id: int):
 
 
 @app.post("/accounts/{account_id}/cards")
-async def card_add(account_id: int, card_mask: str = Form(...), label: str = Form(""), is_primary: str = Form("")):
+async def card_add(
+    account_id: int,
+    card_mask: str = Form(...),
+    label: str = Form(""),
+    is_primary: str = Form(""),
+):
     async with async_session() as session:
         account = await session.get(Account, account_id)
         if not account:
@@ -637,7 +770,9 @@ async def card_add(account_id: int, card_mask: str = Form(...), label: str = For
 
 
 @app.post("/accounts/{account_id}/cards/{card_id}/edit")
-async def card_edit(account_id: int, card_id: int, label: str = Form(...), is_primary: str = Form("")):
+async def card_edit(
+    account_id: int, card_id: int, label: str = Form(...), is_primary: str = Form("")
+):
     async with async_session() as session:
         card = await session.get(Card, card_id)
         if card and card.account_id == account_id:
@@ -667,16 +802,21 @@ async def card_delete(account_id: int, card_id: int):
 # Email Sources
 # ---------------------------------------------------------------------------
 
+
 @app.get("/sources", response_class=HTMLResponse)
 async def source_list(request: FastAPIRequest):
     async with async_session() as session:
         result = await session.execute(select(EmailSource).order_by(EmailSource.id))
         sources = result.scalars().all()
 
-    return templates.TemplateResponse(request, "sources.html", {
-        "active_page": "sources",
-        "sources": sources,
-    })
+    return templates.TemplateResponse(
+        request,
+        "sources.html",
+        {
+            "active_page": "sources",
+            "sources": sources,
+        },
+    )
 
 
 @app.post("/sources")
@@ -689,7 +829,10 @@ async def create_source(
 ):
     # Build creds dict based on provider
     if provider == "gmail":
-        creds = {"user": account_identifier.strip(), "app_password": credential_value.strip()}
+        creds = {
+            "user": account_identifier.strip(),
+            "app_password": credential_value.strip(),
+        }
     elif provider == "fastmail":
         creds = {"token": credential_value.strip()}
     else:
@@ -717,10 +860,14 @@ async def edit_source_form(source_id: int, request: FastAPIRequest):
         if not source:
             return RedirectResponse(url="/sources", status_code=303)
 
-    return templates.TemplateResponse(request, "source_edit.html", {
-        "active_page": "sources",
-        "source": source,
-    })
+    return templates.TemplateResponse(
+        request,
+        "source_edit.html",
+        {
+            "active_page": "sources",
+            "source": source,
+        },
+    )
 
 
 @app.post("/sources/{source_id}/edit")
@@ -746,7 +893,10 @@ async def update_source(
         # Only re-encrypt credentials if a new value was provided
         if credential_value.strip():
             if provider == "gmail":
-                creds = {"user": account_identifier.strip(), "app_password": credential_value.strip()}
+                creds = {
+                    "user": account_identifier.strip(),
+                    "app_password": credential_value.strip(),
+                }
             elif provider == "fastmail":
                 creds = {"token": credential_value.strip()}
             else:
@@ -782,7 +932,9 @@ async def test_source(source_id: int):
     async with async_session() as session:
         source = await session.get(EmailSource, source_id)
         if not source:
-            return JSONResponse({"ok": False, "error": "Source not found"}, status_code=404)
+            return JSONResponse(
+                {"ok": False, "error": "Source not found"}, status_code=404
+            )
 
     try:
         creds = decrypt_credentials(source.credentials)
@@ -797,7 +949,10 @@ async def test_source(source_id: int):
 
     def _test_fastmail(token):
         jmap_session_url = "https://api.fastmail.com/jmap/session"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
         req = Request(jmap_session_url, headers=headers)
         with urlopen(req) as resp:
             data = json.loads(resp.read())
@@ -810,7 +965,9 @@ async def test_source(source_id: int):
         user = creds.get("user", "")
         password = creds.get("app_password", "")
         if not user or not password:
-            return JSONResponse({"ok": False, "error": "Missing user or app_password in credentials"})
+            return JSONResponse(
+                {"ok": False, "error": "Missing user or app_password in credentials"}
+            )
         try:
             msg = await asyncio.to_thread(_test_gmail, user, password)
             return JSONResponse({"ok": True, "message": msg})
@@ -828,12 +985,15 @@ async def test_source(source_id: int):
             return JSONResponse({"ok": False, "error": f"Fastmail test failed: {e}"})
 
     else:
-        return JSONResponse({"ok": False, "error": f"Unknown provider: {source.provider}"})
+        return JSONResponse(
+            {"ok": False, "error": f"Unknown provider: {source.provider}"}
+        )
 
 
 # ---------------------------------------------------------------------------
 # Rules
 # ---------------------------------------------------------------------------
+
 
 @app.get("/rules", response_class=HTMLResponse)
 async def rule_list(request: FastAPIRequest):
@@ -843,16 +1003,22 @@ async def rule_list(request: FastAPIRequest):
 
         # Load sources for the dropdown in the add-rule form
         source_result = await session.execute(
-            select(EmailSource).where(EmailSource.active == True).order_by(EmailSource.id)  # noqa: E712
+            select(EmailSource)
+            .where(EmailSource.active.is_(True))
+            .order_by(EmailSource.id)
         )
         sources = source_result.scalars().all()
 
-    return templates.TemplateResponse(request, "rules.html", {
-        "active_page": "rules",
-        "rules": rules,
-        "sources": sources,
-        "supported_banks": SUPPORTED_BANKS,
-    })
+    return templates.TemplateResponse(
+        request,
+        "rules.html",
+        {
+            "active_page": "rules",
+            "rules": rules,
+            "sources": sources,
+            "supported_banks": SUPPORTED_BANKS,
+        },
+    )
 
 
 @app.post("/rules")
@@ -896,16 +1062,22 @@ async def rule_edit_form(request: FastAPIRequest, rule_id: int):
 
         # Load sources for the dropdown
         source_result = await session.execute(
-            select(EmailSource).where(EmailSource.active == True).order_by(EmailSource.id)  # noqa: E712
+            select(EmailSource)
+            .where(EmailSource.active.is_(True))
+            .order_by(EmailSource.id)
         )
         sources = source_result.scalars().all()
 
-    return templates.TemplateResponse(request, "rule_edit.html", {
-        "active_page": "rules",
-        "rule": rule,
-        "sources": sources,
-        "supported_banks": SUPPORTED_BANKS,
-    })
+    return templates.TemplateResponse(
+        request,
+        "rule_edit.html",
+        {
+            "active_page": "rules",
+            "rule": rule,
+            "sources": sources,
+            "supported_banks": SUPPORTED_BANKS,
+        },
+    )
 
 
 @app.post("/rules/{rule_id}/edit")
@@ -970,6 +1142,7 @@ async def rule_toggle(rule_id: int):
 # Reparse
 # ---------------------------------------------------------------------------
 
+
 @app.post("/emails/{email_id}/reparse")
 async def reparse_email(email_id: int):
     """Re-parse a failed email from the failed spool (.eml file).
@@ -983,38 +1156,77 @@ async def reparse_email(email_id: int):
     async with async_session() as session:
         email_row = await session.get(Email, email_id)
         if not email_row:
-            return JSONResponse({"ok": False, "error": "Email not found"}, status_code=404)
+            return JSONResponse(
+                {"ok": False, "error": "Email not found"}, status_code=404
+            )
 
-        rule = await session.get(FetchRule, email_row.rule_id) if email_row.rule_id else None
+        rule = (
+            await session.get(FetchRule, email_row.rule_id)
+            if email_row.rule_id
+            else None
+        )
 
     if not rule:
-        return JSONResponse({"ok": False, "error": "No fetch rule associated with this email"}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "error": "No fetch rule associated with this email"},
+            status_code=400,
+        )
 
     # Locate the .eml file using the same sanitisation as _save_failed_email
     safe_id = _re.sub(r"[^\w\-.]", "_", email_row.message_id)
     spool_path = SPOOL_DIR / f"{email_row.provider}_{safe_id}.eml"
     if not spool_path.exists():
         return JSONResponse(
-            {"ok": False, "error": f"Spool file not found ({spool_path.name}). It may have been cleaned up or never saved."},
+            {
+                "ok": False,
+                "error": f"Spool file not found ({spool_path.name}). It may have been cleaned up or never saved.",
+            },
             status_code=404,
         )
 
     raw_bytes = spool_path.read_bytes()
 
     # Try standard transaction parse first
-    error, txn_data = _process_email(rule.bank, raw_bytes)
+    error, txn_data, password_hint = _process_email(rule.bank, raw_bytes)
 
-    # If that failed, try CC statement path
+    # If that failed (or parsed as statement with no transaction), try statement path
     stmt_result = None
-    if error and not txn_data:
+    if not txn_data:
         try:
             from bank_email_fetcher.statements import process_statement_email
+
             stmt_result = await process_statement_email(
-                rule.bank, raw_bytes, email_row.subject or "",
+                rule.bank,
+                raw_bytes,
+                email_row.subject or "",
                 source_id=email_row.source_id,
             )
         except Exception as stmt_err:
-            logger.warning("Statement processing error during reparse of email %d: %s", email_id, stmt_err)
+            logger.warning(
+                "CC statement processing error during reparse of email %d: %s",
+                email_id,
+                stmt_err,
+            )
+
+        if stmt_result is None:
+            try:
+                from bank_email_fetcher.bank_statements import (
+                    process_bank_statement_email,
+                )
+
+                stmt_result = await process_bank_statement_email(
+                    rule.bank,
+                    raw_bytes,
+                    email_row.subject or "",
+                    source_id=email_row.source_id,
+                    password_hint=password_hint,
+                )
+            except Exception as stmt_err:
+                logger.warning(
+                    "Bank statement processing error during reparse of email %d: %s",
+                    email_id,
+                    stmt_err,
+                )
 
     if not txn_data and not stmt_result:
         # Parsing still fails — update error message so it's fresh, but keep status=failed
@@ -1023,7 +1235,12 @@ async def reparse_email(email_id: int):
             if em:
                 em.error = error
                 await session.commit()
-        return JSONResponse({"ok": False, "error": error or "Parsing failed (no transaction or statement found)"})
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": error or "Parsing failed (no transaction or statement found)",
+            }
+        )
 
     # Success — update the email row and create transaction if needed
     from sqlalchemy.exc import IntegrityError as _IntegrityError
@@ -1032,14 +1249,27 @@ async def reparse_email(email_id: int):
         async with session.begin():
             em = await session.get(Email, email_id)
             if not em:
-                return JSONResponse({"ok": False, "error": "Email disappeared"}, status_code=500)
+                return JSONResponse(
+                    {"ok": False, "error": "Email disappeared"}, status_code=500
+                )
 
             em.status = "parsed"
             em.error = None
 
             if stmt_result and stmt_result.get("statement_upload_id"):
                 from bank_email_fetcher.db import StatementUpload
-                su = await session.get(StatementUpload, stmt_result["statement_upload_id"])
+
+                su = await session.get(
+                    StatementUpload, stmt_result["statement_upload_id"]
+                )
+                if su:
+                    su.email_id = em.id
+            elif stmt_result and stmt_result.get("bank_statement_upload_id"):
+                from bank_email_fetcher.db import BankStatementUpload
+
+                su = await session.get(
+                    BankStatementUpload, stmt_result["bank_statement_upload_id"]
+                )
                 if su:
                     su.email_id = em.id
 
@@ -1047,7 +1277,11 @@ async def reparse_email(email_id: int):
             if txn_data:
                 try:
                     async with session.begin_nested():
-                        from bank_email_fetcher.linker import build_link_context, link_transaction as _link_txn
+                        from bank_email_fetcher.linker import (
+                            build_link_context,
+                            link_transaction as _link_txn,
+                        )
+
                         txn_row = Transaction(email_id=em.id, **txn_data)
                         session.add(txn_row)
                         await session.flush()
@@ -1061,35 +1295,53 @@ async def reparse_email(email_id: int):
                     return JSONResponse({"ok": False, "error": em.error})
 
     # Send Telegram notification for the new transaction
-    from bank_email_fetcher.settings_service import should_notify_transactions, get_telegram_chat_id
+    from bank_email_fetcher.settings_service import (
+        should_notify_transactions,
+        get_telegram_chat_id,
+    )
+
     if txn_id and txn_data and should_notify_transactions():
         try:
             from bank_email_fetcher.telegram_bot import send_transaction_notification
-            await send_transaction_notification(txn_id, txn_data, get_telegram_chat_id())
+
+            await send_transaction_notification(
+                txn_id, txn_data, get_telegram_chat_id()
+            )
         except Exception as tg_err:
-            logger.warning("Telegram notification failed for reparsed txn #%s: %s", txn_id, tg_err)
+            logger.warning(
+                "Telegram notification failed for reparsed txn #%s: %s", txn_id, tg_err
+            )
 
     msg = "Email re-parsed successfully"
     if stmt_result:
-        msg = f"CC statement re-processed (matched={stmt_result.get('matched', 0)}, imported={stmt_result.get('imported', 0)})"
+        stmt_kind = "Bank" if stmt_result.get("bank_statement_upload_id") else "CC"
+        msg = f"{stmt_kind} statement re-processed (matched={stmt_result.get('matched', 0)}, imported={stmt_result.get('imported', 0)})"
     logger.info("Reparse of email %d succeeded: %s", email_id, msg)
-    return JSONResponse({"ok": True, "message": msg, "new_status": "parsed", "txn_id": txn_id})
+    return JSONResponse(
+        {"ok": True, "message": msg, "new_status": "parsed", "txn_id": txn_id}
+    )
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: FastAPIRequest):
     from bank_email_fetcher.settings_service import get_grouped_settings
 
-    return templates.TemplateResponse(request, "settings.html", {
-        "active_page": "settings",
-        "grouped_settings": get_grouped_settings(),
-    })
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "active_page": "settings",
+            "grouped_settings": get_grouped_settings(),
+        },
+    )
 
 
 @app.post("/settings")
 async def save_settings_route(request: FastAPIRequest):
     from bank_email_fetcher.settings_service import (
-        parse_form_updates, save_settings, get_grouped_settings,
+        parse_form_updates,
+        save_settings,
+        get_grouped_settings,
         restart_services,
     )
 
@@ -1097,15 +1349,24 @@ async def save_settings_route(request: FastAPIRequest):
     updates, errors = parse_form_updates(form)
 
     if errors:
-        return templates.TemplateResponse(request, "settings.html", {
-            "active_page": "settings",
-            "grouped_settings": get_grouped_settings(),
-            "errors": errors,
-        }, status_code=422)
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                "active_page": "settings",
+                "grouped_settings": get_grouped_settings(),
+                "errors": errors,
+            },
+            status_code=422,
+        )
 
     changed_keys = await save_settings(updates)
 
-    telegram_restart_keys = {"telegram.bot_token", "telegram.chat_id", "telegram.enabled"}
+    telegram_restart_keys = {
+        "telegram.bot_token",
+        "telegram.chat_id",
+        "telegram.enabled",
+    }
     if changed_keys & telegram_restart_keys:
         await restart_services()
 
@@ -1115,6 +1376,7 @@ async def save_settings_route(request: FastAPIRequest):
 # ---------------------------------------------------------------------------
 # Poll trigger
 # ---------------------------------------------------------------------------
+
 
 def _track_poll_task(task) -> None:
     global poll_task
@@ -1134,21 +1396,99 @@ def _track_poll_task(task) -> None:
 STATEMENTS_DIR = Path(__file__).parent / "data" / "statements"
 
 
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    """Strip any path components and restrict to a safe character set."""
+    base = Path(filename or "statement.pdf").name or "statement.pdf"
+    cleaned = _SAFE_FILENAME_RE.sub("_", base).strip("._") or "statement.pdf"
+    return cleaned[:120]
+
+
+def _unlink_statement_file(path_str: str | None) -> None:
+    """Delete a statement PDF, but only if it resolves inside STATEMENTS_DIR."""
+    if not path_str:
+        return
+    try:
+        target = Path(path_str).resolve()
+        target.relative_to(STATEMENTS_DIR.resolve())
+    except (ValueError, OSError):
+        return
+    try:
+        target.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 @app.get("/statements", response_class=HTMLResponse)
 async def statements_list(request: FastAPIRequest):
     async with async_session() as session:
-        uploads = (await session.execute(
-            select(StatementUpload).order_by(StatementUpload.created_at.desc())
-        )).scalars().all()
-        cc_accounts = (await session.execute(
-            select(Account).where(Account.type == "credit_card", Account.active == True)  # noqa: E712
-            .order_by(Account.bank, Account.label)
-        )).scalars().all()
-    return templates.TemplateResponse(request, "statements.html", {
-        "active_page": "statements",
-        "uploads": uploads,
-        "cc_accounts": cc_accounts,
-    })
+        cc_uploads = (
+            (
+                await session.execute(
+                    select(StatementUpload).order_by(StatementUpload.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        bank_uploads = (
+            (
+                await session.execute(
+                    select(BankStatementUpload).order_by(
+                        BankStatementUpload.created_at.desc()
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        cc_accounts = (
+            (
+                await session.execute(
+                    select(Account)
+                    .where(Account.type == "credit_card", Account.active.is_(True))
+                    .order_by(Account.bank, Account.label)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        bank_accounts = (
+            (
+                await session.execute(
+                    select(Account)
+                    .where(Account.type == "bank_account", Account.active.is_(True))
+                    .order_by(Account.bank, Account.label)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    # Tag each upload with its type so templates can distinguish them
+    for u in cc_uploads:
+        u._statement_type = "cc"
+    for u in bank_uploads:
+        u._statement_type = "bank"
+    # Merge and sort by created_at descending
+    uploads = sorted(
+        [*cc_uploads, *bank_uploads],
+        key=lambda u: u.created_at or datetime.min,
+        reverse=True,
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "statements.html",
+        {
+            "active_page": "statements",
+            "uploads": uploads,
+            "cc_accounts": cc_accounts,
+            "bank_accounts": bank_accounts,
+        },
+    )
 
 
 @app.post("/statements/upload")
@@ -1159,9 +1499,14 @@ async def statement_upload(
     file: UploadFile = File(...),
 ):
     from bank_email_fetcher.statements import (
-        parse_statement, reconcile_statement, reconciliation_to_json,
-        enrich_matched_transactions, parse_cc_amount, parse_cc_date,
-        last4_from_card, _extract_digits,
+        parse_statement,
+        reconcile_statement,
+        reconciliation_to_json,
+        enrich_matched_transactions,
+        parse_cc_amount,
+        parse_cc_date,
+        last4_from_card,
+        _extract_digits,
     )
     from bank_email_fetcher.linker import build_link_context, link_transaction
 
@@ -1173,7 +1518,7 @@ async def statement_upload(
     # Save PDF to disk
     STATEMENTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    safe_name = file.filename.replace("/", "_").replace("\\", "_")
+    safe_name = _safe_upload_filename(file.filename)
     file_path = STATEMENTS_DIR / f"{ts}_{safe_name}"
     content = await file.read()
     file_path.write_bytes(content)
@@ -1200,9 +1545,15 @@ async def statement_upload(
 
     # Reconcile against DB transactions for this account
     async with async_session() as session:
-        db_txns = (await session.execute(
-            select(Transaction).where(Transaction.account_id == account_id)
-        )).scalars().all()
+        db_txns = (
+            (
+                await session.execute(
+                    select(Transaction).where(Transaction.account_id == account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     recon = reconcile_statement(parsed, db_txns, account_id)
 
@@ -1231,9 +1582,11 @@ async def statement_upload(
 
         # Auto-import all missing transactions
         link_ctx = await build_link_context(session)
-        acct_cards = (await session.execute(
-            select(Card).where(Card.account_id == account_id)
-        )).scalars().all()
+        acct_cards = (
+            (await session.execute(select(Card).where(Card.account_id == account_id)))
+            .scalars()
+            .all()
+        )
         _card_l4s = [v for v in (last4_from_card(c.card_mask) for c in acct_cards) if v]
 
         def _resolve_card_mask(raw: str | None) -> str | None:
@@ -1252,7 +1605,7 @@ async def statement_upload(
             try:
                 amount = parse_cc_amount(entry["amount"])
                 txn_date = parse_cc_date(entry["date"])
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 continue
             txn = Transaction(
                 statement_upload_id=upload.id,
@@ -1285,14 +1638,327 @@ async def statement_upload(
         upload_id = upload.id
 
     from bank_email_fetcher.reminders import init_payment_tracking
+
     await init_payment_tracking(upload_id)
 
     return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
 
 
+@app.post("/statements/upload-bank")
+async def bank_statement_upload(
+    request: FastAPIRequest,
+    account_id: int = Form(...),
+    password: str = Form(""),
+    file: UploadFile = File(...),
+):
+    from bank_email_fetcher.bank_statements import (
+        parse_bank_statement,
+        reconcile_bank_statement,
+        reconciliation_to_json,
+        enrich_matched_transactions,
+        _parse_amount,
+        _parse_date,
+        _last4,
+    )
+    from bank_email_fetcher.linker import build_link_context, link_transaction
+
+    async with async_session() as session:
+        account = await session.get(Account, account_id)
+        if not account or account.type != "bank_account":
+            return RedirectResponse(url="/statements", status_code=303)
+
+    # Save PDF to disk
+    STATEMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    safe_name = _safe_upload_filename(file.filename)
+    file_path = STATEMENTS_DIR / f"{ts}_{safe_name}"
+    content = await file.read()
+    file_path.write_bytes(content)
+
+    # Parse the PDF
+    try:
+        parsed = await asyncio.to_thread(
+            parse_bank_statement, file_path, account.bank, password or None
+        )
+    except Exception as e:
+        error_msg = str(e)
+        is_encrypted = "encrypt" in error_msg.lower() or "password" in error_msg.lower()
+        async with async_session() as session:
+            upload = BankStatementUpload(
+                account_id=account_id,
+                bank=account.bank,
+                filename=safe_name,
+                file_path=str(file_path),
+                status="password_required" if is_encrypted else "parse_error",
+                error=error_msg,
+            )
+            session.add(upload)
+            await session.commit()
+            upload_id = upload.id
+        return RedirectResponse(url=f"/statements/bank/{upload_id}", status_code=303)
+
+    # Reconcile against DB transactions for this account
+    async with async_session() as session:
+        db_txns = (
+            (
+                await session.execute(
+                    select(Transaction).where(Transaction.account_id == account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    recon = reconcile_bank_statement(parsed, db_txns, account_id)
+    await enrich_matched_transactions(recon)
+
+    # Create upload and auto-import missing transactions
+    async with async_session() as session:
+        upload = BankStatementUpload(
+            account_id=account_id,
+            bank=parsed.bank or account.bank,
+            filename=safe_name,
+            file_path=str(file_path),
+            status="parsed",
+            account_number=parsed.account_number,
+            account_holder_name=parsed.account_holder_name,
+            opening_balance=parsed.opening_balance,
+            closing_balance=parsed.closing_balance,
+            statement_period_start=parsed.statement_period_start,
+            statement_period_end=parsed.statement_period_end,
+            parsed_txn_count=len(recon["matched"]) + len(recon["missing"]),
+            matched_count=len(recon["matched"]),
+            missing_count=len(recon["missing"]),
+            reconciliation_data=reconciliation_to_json(recon),
+        )
+        session.add(upload)
+        await session.flush()
+
+        link_ctx = await build_link_context(session)
+
+        imported = 0
+        for entry in recon["missing"]:
+            try:
+                amount = _parse_amount(entry["amount"])
+                txn_date = _parse_date(entry["date"])
+            except ValueError, KeyError:
+                continue
+            txn = Transaction(
+                bank_statement_upload_id=upload.id,
+                account_id=account_id,
+                bank=parsed.bank or account.bank,
+                email_type="bank_statement",
+                direction=entry["direction"],
+                amount=amount,
+                currency="INR",
+                transaction_date=txn_date,
+                counterparty=entry.get("narration"),
+                account_mask=_last4(parsed.account_number),
+                reference_number=entry.get("reference_number"),
+                channel=entry.get("channel") or "bank_statement",
+                raw_description=entry.get("narration"),
+            )
+            session.add(txn)
+            await session.flush()
+            link_transaction(link_ctx, txn)
+            await session.flush()
+            entry["imported"] = True
+            entry["imported_txn_id"] = txn.id
+            imported += 1
+
+        upload.imported_count = imported
+        upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
+        upload.reconciliation_data = reconciliation_to_json(recon)
+        if upload.missing_count == 0:
+            upload.status = "imported"
+        elif imported > 0:
+            upload.status = "partial_import"
+        await session.commit()
+        upload_id = upload.id
+
+    return RedirectResponse(url=f"/statements/bank/{upload_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Bank statement routes (separate model: BankStatementUpload)
+# Must be registered BEFORE /statements/{upload_id} wildcard routes to avoid
+# FastAPI matching "bank" as an upload_id parameter.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/statements/bank/{upload_id}", response_class=HTMLResponse)
+async def bank_statement_detail(upload_id: int, request: FastAPIRequest):
+    from bank_email_fetcher.bank_statements import reconciliation_from_json
+
+    async with async_session() as session:
+        upload = await session.get(BankStatementUpload, upload_id)
+        if not upload:
+            return HTMLResponse("<p>Bank statement not found.</p>", 404)
+
+    recon = None
+    if upload.reconciliation_data:
+        recon = reconciliation_from_json(upload.reconciliation_data)
+
+    return templates.TemplateResponse(
+        request,
+        "bank_statement_reconcile.html",
+        {
+            "active_page": "statements",
+            "upload": upload,
+            "recon": recon,
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@app.post("/statements/bank/{upload_id}/retry")
+async def bank_statement_retry(
+    upload_id: int,
+    password: str = Form(...),
+    save_password: str = Form(""),
+):
+    from bank_email_fetcher.bank_statements import (
+        parse_bank_statement,
+        reconcile_bank_statement,
+        reconciliation_to_json,
+        enrich_matched_transactions,
+        _parse_amount,
+        _parse_date,
+        _last4,
+    )
+    from bank_email_fetcher.linker import build_link_context, link_transaction
+
+    async with async_session() as session:
+        upload = await session.get(BankStatementUpload, upload_id)
+        if not upload:
+            return RedirectResponse(url="/statements", status_code=303)
+        account_id = upload.account_id
+        file_path = upload.file_path
+
+    try:
+        parsed = await asyncio.to_thread(
+            parse_bank_statement, Path(file_path), upload.bank, password
+        )
+    except Exception as e:
+        async with async_session() as session:
+            upload = await session.get(BankStatementUpload, upload_id)
+            upload.error = str(e)
+            await session.commit()
+        return RedirectResponse(url=f"/statements/bank/{upload_id}", status_code=303)
+
+    if save_password == "1":
+        from bank_email_fetcher.config import get_fernet
+
+        encrypted = get_fernet().encrypt(password.encode()).decode()
+        async with async_session() as session:
+            account = await session.get(Account, account_id)
+            if account:
+                account.statement_password = encrypted
+                await session.commit()
+
+    async with async_session() as session:
+        db_txns = (
+            (
+                await session.execute(
+                    select(Transaction).where(Transaction.account_id == account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    recon = reconcile_bank_statement(parsed, db_txns, account_id)
+    await enrich_matched_transactions(recon)
+
+    async with async_session() as session:
+        upload = await session.get(BankStatementUpload, upload_id)
+        upload.status = "parsed"
+        upload.account_number = parsed.account_number
+        upload.account_holder_name = parsed.account_holder_name
+        upload.opening_balance = parsed.opening_balance
+        upload.closing_balance = parsed.closing_balance
+        upload.statement_period_start = parsed.statement_period_start
+        upload.statement_period_end = parsed.statement_period_end
+        upload.parsed_txn_count = len(recon["matched"]) + len(recon["missing"])
+        upload.matched_count = len(recon["matched"])
+        upload.missing_count = len(recon["missing"])
+        upload.reconciliation_data = reconciliation_to_json(recon)
+        upload.error = None
+
+        link_ctx = await build_link_context(session)
+        imported = 0
+        for entry in recon["missing"]:
+            if entry.get("imported"):
+                continue
+            try:
+                amount = _parse_amount(entry["amount"])
+                txn_date = _parse_date(entry["date"])
+            except ValueError, KeyError:
+                continue
+            txn = Transaction(
+                bank_statement_upload_id=upload_id,
+                account_id=account_id,
+                bank=parsed.bank,
+                email_type="bank_statement",
+                direction=entry["direction"],
+                amount=amount,
+                currency="INR",
+                transaction_date=txn_date,
+                counterparty=entry.get("narration"),
+                account_mask=_last4(parsed.account_number),
+                reference_number=entry.get("reference_number"),
+                channel=entry.get("channel") or "bank_statement",
+                raw_description=entry.get("narration"),
+            )
+            session.add(txn)
+            await session.flush()
+            link_transaction(link_ctx, txn)
+            await session.flush()
+            entry["imported"] = True
+            entry["imported_txn_id"] = txn.id
+            imported += 1
+
+        upload.imported_count = imported
+        upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
+        upload.reconciliation_data = reconciliation_to_json(recon)
+        if upload.missing_count == 0:
+            upload.status = "imported"
+        elif imported > 0:
+            upload.status = "partial_import"
+        await session.commit()
+
+    return RedirectResponse(url=f"/statements/bank/{upload_id}", status_code=303)
+
+
+@app.post("/statements/bank/{upload_id}/delete")
+async def bank_statement_delete(upload_id: int):
+    async with async_session() as session:
+        upload = await session.get(BankStatementUpload, upload_id)
+        if not upload:
+            return RedirectResponse(url="/statements", status_code=303)
+        await session.execute(
+            update(Transaction)
+            .where(Transaction.bank_statement_upload_id == upload_id)
+            .values(bank_statement_upload_id=None)
+        )
+        _unlink_statement_file(upload.file_path)
+        await session.delete(upload)
+        await session.commit()
+
+    return RedirectResponse(url="/statements", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# CC statement detail/retry/delete/reprocess routes (wildcard {upload_id})
+# ---------------------------------------------------------------------------
+
+
 @app.get("/statements/{upload_id}", response_class=HTMLResponse)
 async def statement_detail(upload_id: int, request: FastAPIRequest):
-    from bank_email_fetcher.statements import reconciliation_from_json, group_recon_by_person
+    from bank_email_fetcher.statements import (
+        reconciliation_from_json,
+        group_recon_by_person,
+    )
 
     async with async_session() as session:
         upload = await session.get(StatementUpload, upload_id)
@@ -1307,14 +1973,18 @@ async def statement_detail(upload_id: int, request: FastAPIRequest):
         person_groups = group_recon_by_person(recon)
         card_summaries = recon.get("card_summaries", [])
 
-    return templates.TemplateResponse(request, "statement_reconcile.html", {
-        "active_page": "statements",
-        "upload": upload,
-        "recon": recon,
-        "person_groups": person_groups,
-        "card_summaries": card_summaries,
-        "error": request.query_params.get("error"),
-    })
+    return templates.TemplateResponse(
+        request,
+        "statement_reconcile.html",
+        {
+            "active_page": "statements",
+            "upload": upload,
+            "recon": recon,
+            "person_groups": person_groups,
+            "card_summaries": card_summaries,
+            "error": request.query_params.get("error"),
+        },
+    )
 
 
 @app.post("/statements/{upload_id}/retry")
@@ -1324,9 +1994,14 @@ async def statement_retry(
     save_password: str = Form(""),
 ):
     from bank_email_fetcher.statements import (
-        parse_statement, reconcile_statement, reconciliation_to_json,
-        enrich_matched_transactions, parse_cc_amount, parse_cc_date,
-        last4_from_card, _extract_digits,
+        parse_statement,
+        reconcile_statement,
+        reconciliation_to_json,
+        enrich_matched_transactions,
+        parse_cc_amount,
+        parse_cc_date,
+        last4_from_card,
+        _extract_digits,
     )
     from bank_email_fetcher.linker import build_link_context, link_transaction
 
@@ -1349,6 +2024,7 @@ async def statement_retry(
     # Save password to account if requested
     if save_password == "1":
         from bank_email_fetcher.config import get_fernet
+
         encrypted = get_fernet().encrypt(password.encode()).decode()
         async with async_session() as session:
             account = await session.get(Account, account_id)
@@ -1358,9 +2034,15 @@ async def statement_retry(
                 logger.info("Saved statement password for account %s", account.label)
 
     async with async_session() as session:
-        db_txns = (await session.execute(
-            select(Transaction).where(Transaction.account_id == account_id)
-        )).scalars().all()
+        db_txns = (
+            (
+                await session.execute(
+                    select(Transaction).where(Transaction.account_id == account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     recon = reconcile_statement(parsed, db_txns, account_id)
     await enrich_matched_transactions(recon)
@@ -1382,9 +2064,11 @@ async def statement_retry(
 
         # Auto-import missing transactions
         link_ctx = await build_link_context(session)
-        acct_cards = (await session.execute(
-            select(Card).where(Card.account_id == account_id)
-        )).scalars().all()
+        acct_cards = (
+            (await session.execute(select(Card).where(Card.account_id == account_id)))
+            .scalars()
+            .all()
+        )
         _card_l4s = [v for v in (last4_from_card(c.card_mask) for c in acct_cards) if v]
 
         def _resolve_card_mask(raw: str | None) -> str | None:
@@ -1405,7 +2089,7 @@ async def statement_retry(
             try:
                 amount = parse_cc_amount(entry["amount"])
                 txn_date = parse_cc_date(entry["date"])
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 continue
             txn = Transaction(
                 statement_upload_id=upload_id,
@@ -1437,6 +2121,7 @@ async def statement_retry(
         await session.commit()
 
     from bank_email_fetcher.reminders import init_payment_tracking
+
     await init_payment_tracking(upload_id)
 
     return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
@@ -1454,11 +2139,7 @@ async def statement_delete(upload_id: int):
             .where(Transaction.statement_upload_id == upload_id)
             .values(statement_upload_id=None)
         )
-        # Delete PDF file
-        try:
-            Path(upload.file_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        _unlink_statement_file(upload.file_path)
         await session.delete(upload)
         await session.commit()
 
@@ -1467,13 +2148,15 @@ async def statement_delete(upload_id: int):
 
 @app.post("/statements/{upload_id}/reprocess")
 async def statement_reprocess(upload_id: int):
-    """Re-parse the saved PDF and rebuild reconciliation data with latest schema."""
+    """Re-parse the saved CC statement PDF and rebuild reconciliation data."""
     from bank_email_fetcher.statements import (
-        parse_statement, reconcile_statement, reconciliation_to_json,
+        parse_statement,
+        reconcile_statement,
+        reconciliation_to_json,
         enrich_matched_transactions,
+        extract_pdf_from_email,
+        _parse_pdf_bytes_sync,
     )
-
-    from bank_email_fetcher.statements import extract_pdf_from_email
 
     async with async_session() as session:
         upload = await session.get(StatementUpload, upload_id)
@@ -1489,8 +2172,11 @@ async def statement_reprocess(upload_id: int):
         account = await session.get(Account, account_id)
         if account and account.statement_password:
             from bank_email_fetcher.config import get_fernet
+
             try:
-                password = get_fernet().decrypt(account.statement_password.encode()).decode()
+                password = (
+                    get_fernet().decrypt(account.statement_password.encode()).decode()
+                )
             except Exception:
                 pass
 
@@ -1501,7 +2187,6 @@ async def statement_reprocess(upload_id: int):
             status_code=303,
         )
 
-    # If PDF file exists on disk, use it directly
     pdf_path = Path(file_path) if file_path else None
     if pdf_path and pdf_path.exists():
         try:
@@ -1509,7 +2194,6 @@ async def statement_reprocess(upload_id: int):
         except Exception as e:
             return _reprocess_fail(f"Parse error: {e}")
     elif email_id:
-        # PDF not on disk — re-fetch from email source
         async with async_session() as session:
             email_row = await session.get(Email, email_id)
             if not email_row or not email_row.source_id or not email_row.remote_id:
@@ -1528,7 +2212,10 @@ async def statement_reprocess(upload_id: int):
 
         if provider == "gmail":
             raw = await asyncio.to_thread(
-                _fetch_gmail_single_sync, creds["user"], creds["app_password"], remote_id
+                _fetch_gmail_single_sync,
+                creds["user"],
+                creds["app_password"],
+                remote_id,
             )
         elif provider == "fastmail":
             raw = await asyncio.to_thread(
@@ -1544,18 +2231,25 @@ async def statement_reprocess(upload_id: int):
         if not pdfs:
             return _reprocess_fail("No PDF attachment found in re-fetched email")
 
-        from bank_email_fetcher.statements import _parse_pdf_bytes_sync
         try:
-            parsed = await asyncio.to_thread(_parse_pdf_bytes_sync, pdfs[0][1], password)
+            parsed = await asyncio.to_thread(
+                _parse_pdf_bytes_sync, pdfs[0][1], password
+            )
         except Exception as e:
             return _reprocess_fail(f"Parse error: {e}")
     else:
         return _reprocess_fail("PDF file missing and no linked email to re-fetch from")
 
     async with async_session() as session:
-        db_txns = (await session.execute(
-            select(Transaction).where(Transaction.account_id == account_id)
-        )).scalars().all()
+        db_txns = (
+            (
+                await session.execute(
+                    select(Transaction).where(Transaction.account_id == account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     recon = reconcile_statement(parsed, db_txns, account_id)
     await enrich_matched_transactions(recon)
@@ -1564,7 +2258,6 @@ async def statement_reprocess(upload_id: int):
         upload = await session.get(StatementUpload, upload_id)
         upload.card_number = parsed.card_number
         upload.statement_name = parsed.name
-        # Reset payment tracking if due_date or amount changed
         if (
             upload.due_date != parsed.due_date
             or upload.total_amount_due != parsed.statement_total_amount_due
@@ -1584,6 +2277,7 @@ async def statement_reprocess(upload_id: int):
         await session.commit()
 
     from bank_email_fetcher.reminders import init_payment_tracking
+
     await init_payment_tracking(upload_id)
 
     return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
@@ -1591,24 +2285,30 @@ async def statement_reprocess(upload_id: int):
 
 @app.post("/statements/reprocess-failed")
 async def statements_reprocess_failed():
-    """Reprocess failed emails that have PDF attachments as CC statements."""
-    from bank_email_fetcher.statements import process_statement_email, extract_pdf_from_email
+    """Reprocess failed emails that have PDF attachments as statements (CC or bank)."""
+    from bank_email_fetcher.statements import (
+        process_statement_email,
+        extract_pdf_from_email,
+    )
+    from bank_email_fetcher.bank_statements import process_bank_statement_email
 
     SPOOL_DIR = Path(__file__).parent / "data" / "failed"
     if not SPOOL_DIR.exists():
         return RedirectResponse(url="/statements", status_code=303)
 
     async with async_session() as session:
-        failed_emails = (await session.execute(
-            select(Email, FetchRule)
-            .join(FetchRule, Email.rule_id == FetchRule.id)
-            .where(Email.status == "failed")
-        )).all()
+        failed_emails = (
+            await session.execute(
+                select(Email, FetchRule)
+                .join(FetchRule, Email.rule_id == FetchRule.id)
+                .where(Email.status == "failed")
+            )
+        ).all()
 
     processed = 0
     for email_row, rule in failed_emails:
-        # Match the sanitization in _save_failed_email: re.sub(r"[^\w\-.]", "_", message_id)
         import re as _re
+
         safe_id = _re.sub(r"[^\w\-.]", "_", email_row.message_id)
         spool_name = f"{email_row.provider}_{safe_id}.eml"
         matches = [SPOOL_DIR / spool_name] if (SPOOL_DIR / spool_name).exists() else []
@@ -1620,14 +2320,34 @@ async def statements_reprocess_failed():
         if not pdfs:
             continue
 
+        # Try CC statement first, then bank account statement
+        result = None
         try:
             result = await process_statement_email(
-                rule.bank, raw_bytes, email_row.subject or "",
+                rule.bank,
+                raw_bytes,
+                email_row.subject or "",
                 source_id=email_row.source_id,
             )
         except Exception as e:
-            logger.warning("Failed to reprocess email %s as statement: %s", email_row.id, e)
-            continue
+            logger.warning(
+                "Failed to reprocess email %s as CC statement: %s", email_row.id, e
+            )
+
+        if result is None:
+            try:
+                result = await process_bank_statement_email(
+                    rule.bank,
+                    raw_bytes,
+                    email_row.subject or "",
+                    source_id=email_row.source_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to reprocess email %s as bank statement: %s",
+                    email_row.id,
+                    e,
+                )
 
         if result:
             async with async_session() as session:
@@ -1635,15 +2355,22 @@ async def statements_reprocess_failed():
                 if em:
                     em.status = "parsed"
                     em.error = None
-                # Link statement upload to email
                 if result.get("statement_upload_id"):
-                    su = await session.get(StatementUpload, result["statement_upload_id"])
+                    su = await session.get(
+                        StatementUpload, result["statement_upload_id"]
+                    )
+                    if su:
+                        su.email_id = email_row.id
+                elif result.get("bank_statement_upload_id"):
+                    su = await session.get(
+                        BankStatementUpload, result["bank_statement_upload_id"]
+                    )
                     if su:
                         su.email_id = email_row.id
                 await session.commit()
             processed += 1
 
-    logger.info("Reprocessed %d failed emails as CC statements", processed)
+    logger.info("Reprocessed %d failed emails as statements", processed)
     return RedirectResponse(url="/statements", status_code=303)
 
 
@@ -1673,8 +2400,10 @@ app.include_router(api_router)
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     import uvicorn
+
     uvicorn.run("app:app", host="127.0.0.1", port=8000)
 
 

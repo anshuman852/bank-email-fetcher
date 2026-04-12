@@ -1,7 +1,8 @@
 """SQLAlchemy async models and database initialisation for bank-email-fetcher.
 
 Defines all ORM models (EmailSource, Account, Card, FetchRule, Email,
-StatementUpload, Transaction) and the async engine/session factory.
+StatementUpload, BankStatementUpload, Transaction) and the async
+engine/session factory.
 
 init_db() is called at startup (via app.py lifespan). It runs create_all
 then applies inline schema migrations for new columns via try/except
@@ -75,7 +76,8 @@ class Account(Base):
     label = Column(String, nullable=False)
     type = Column(String, nullable=False)  # credit_card, debit_card, bank_account
     account_number = Column(String)
-    statement_password = Column(String)  # Fernet-encrypted, for CC statement PDFs
+    statement_password = Column(String)  # Fernet-encrypted, for statement PDFs
+    statement_password_hint = Column(String)  # e.g., "Date of birth in DDMMYYYY format"
     active = Column(Boolean, default=True)
 
     cards = relationship(
@@ -109,6 +111,7 @@ class FetchRule(Base):
     subject = Column(String)
     bank = Column(String, nullable=False)
     folder = Column(String)
+    email_kind = Column(String)  # "transaction", "statement", or NULL (try both)
     enabled = Column(Boolean, default=True)
     initial_backfill_done_at = Column(DateTime)  # NULL = needs full historical scan
 
@@ -175,6 +178,35 @@ class StatementUpload(Base):
     account = relationship("Account", lazy="joined")
 
 
+class BankStatementUpload(Base):
+    __tablename__ = "bank_statement_uploads"
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    email_id = Column(Integer, ForeignKey("emails.id"), nullable=True)
+    bank = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    status = Column(
+        String, nullable=False, default="parsed"
+    )  # parsed, password_required, parse_error, imported, partial_import
+    account_number = Column(String)
+    account_holder_name = Column(String)
+    opening_balance = Column(String)
+    closing_balance = Column(String)
+    statement_period_start = Column(String)
+    statement_period_end = Column(String)
+    parsed_txn_count = Column(Integer, default=0)
+    matched_count = Column(Integer, default=0)
+    missing_count = Column(Integer, default=0)
+    imported_count = Column(Integer, default=0)
+    reconciliation_data = Column(Text)  # JSON
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    account = relationship("Account", lazy="joined")
+
+
 class Setting(Base):
     __tablename__ = "settings"
 
@@ -195,6 +227,9 @@ class Transaction(Base):
 
     statement_upload_id = Column(
         Integer, ForeignKey("statement_uploads.id"), nullable=True
+    )
+    bank_statement_upload_id = Column(
+        Integer, ForeignKey("bank_statement_uploads.id"), nullable=True
     )
 
     account = relationship("Account", lazy="joined")
@@ -232,114 +267,9 @@ class Transaction(Base):
     )
 
 
-def _sqlite_transactions_has_legacy_dedup_constraint(sync_conn) -> bool:
-    row = sync_conn.exec_driver_sql(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transactions'"
-    ).fetchone()
-    if row is None or row[0] is None:
-        return False
-    return "uq_transaction_dedup" in row[0]
-
-
-def _migrate_sqlite_transactions_table(sync_conn) -> None:
-    if sync_conn.dialect.name != "sqlite":
-        return
-    if not _sqlite_transactions_has_legacy_dedup_constraint(sync_conn):
-        return
-
-    logger.warning("Removing legacy transaction dedup constraint from SQLite database")
-    sync_conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
-    try:
-        sync_conn.exec_driver_sql(
-            """
-            CREATE TABLE transactions__new (
-                id INTEGER NOT NULL,
-                email_id INTEGER,
-                account_id INTEGER,
-                card_id INTEGER,
-                bank VARCHAR NOT NULL,
-                email_type VARCHAR NOT NULL,
-                direction VARCHAR NOT NULL,
-                amount NUMERIC(12, 2) NOT NULL,
-                currency VARCHAR,
-                transaction_date DATE,
-                counterparty VARCHAR,
-                card_mask VARCHAR,
-                account_mask VARCHAR,
-                reference_number VARCHAR,
-                channel VARCHAR,
-                balance NUMERIC(12, 2),
-                raw_description TEXT,
-                created_at DATETIME,
-                PRIMARY KEY (id),
-                FOREIGN KEY(email_id) REFERENCES emails (id),
-                FOREIGN KEY(account_id) REFERENCES accounts (id),
-                FOREIGN KEY(card_id) REFERENCES cards (id)
-            )
-            """
-        )
-        sync_conn.exec_driver_sql(
-            """
-            INSERT INTO transactions__new (
-                id,
-                email_id,
-                account_id,
-                card_id,
-                bank,
-                email_type,
-                direction,
-                amount,
-                currency,
-                transaction_date,
-                counterparty,
-                card_mask,
-                account_mask,
-                reference_number,
-                channel,
-                balance,
-                raw_description,
-                created_at
-            )
-            SELECT
-                id,
-                email_id,
-                account_id,
-                card_id,
-                bank,
-                email_type,
-                direction,
-                amount,
-                currency,
-                transaction_date,
-                counterparty,
-                card_mask,
-                account_mask,
-                reference_number,
-                channel,
-                balance,
-                raw_description,
-                created_at
-            FROM transactions
-            """
-        )
-        sync_conn.exec_driver_sql("DROP TABLE transactions")
-        sync_conn.exec_driver_sql(
-            "ALTER TABLE transactions__new RENAME TO transactions"
-        )
-        sync_conn.exec_driver_sql(
-            "CREATE INDEX ix_transactions_transaction_date ON transactions (transaction_date)"
-        )
-        sync_conn.exec_driver_sql(
-            "CREATE INDEX ix_transactions_bank ON transactions (bank)"
-        )
-    finally:
-        sync_conn.exec_driver_sql("PRAGMA foreign_keys=ON")
-
-
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_migrate_sqlite_transactions_table)
 
     # Add missing columns for schema migrations
     async with engine.begin() as conn:
@@ -423,6 +353,36 @@ async def init_db() -> None:
                 "AND created_at >= date('now', 'start of month')"
             )
         )
+
+        # bank_statement_upload_id FK on transactions
+        try:
+            await conn.execute(
+                text("SELECT bank_statement_upload_id FROM transactions LIMIT 0")
+            )
+        except Exception:
+            await conn.execute(
+                text(
+                    "ALTER TABLE transactions ADD COLUMN bank_statement_upload_id INTEGER REFERENCES bank_statement_uploads(id)"
+                )
+            )
+
+        # email_kind on fetch_rules ("transaction", "statement", or NULL)
+        try:
+            await conn.execute(text("SELECT email_kind FROM fetch_rules LIMIT 0"))
+        except Exception:
+            await conn.execute(
+                text("ALTER TABLE fetch_rules ADD COLUMN email_kind VARCHAR")
+            )
+
+        # statement_password_hint on accounts
+        try:
+            await conn.execute(
+                text("SELECT statement_password_hint FROM accounts LIMIT 0")
+            )
+        except Exception:
+            await conn.execute(
+                text("ALTER TABLE accounts ADD COLUMN statement_password_hint VARCHAR")
+            )
 
     # Populate in-memory settings cache
     from bank_email_fetcher.settings_service import load_all_settings

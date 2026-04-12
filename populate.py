@@ -12,8 +12,6 @@ import datetime
 import email as email_lib
 import email.utils
 import logging
-import os
-import sys
 from email.header import decode_header
 from pathlib import Path
 
@@ -36,14 +34,25 @@ DATA_DIR = Path(__file__).parent / "data"
 DB_PATH = Path(__file__).parent / "data" / "bank_email_fetcher.db"
 
 KNOWN_BANKS = {
-    "axis", "equitas", "hdfc", "hsbc", "icici", "idfc",
-    "indusind", "kotak", "onecard", "sbi", "slice", "uboi",
+    "axis",
+    "equitas",
+    "hdfc",
+    "hsbc",
+    "icici",
+    "idfc",
+    "indusind",
+    "kotak",
+    "onecard",
+    "sbi",
+    "slice",
+    "uboi",
 }
 
 
 # ---------------------------------------------------------------------------
 # Helpers (reused from fetcher.py / main.py patterns)
 # ---------------------------------------------------------------------------
+
 
 def _decode_header_value(raw: str | None) -> str:
     """Decode an RFC 2047 encoded header value."""
@@ -95,13 +104,14 @@ def _parse_email_date(msg: email_lib.message.Message) -> datetime.datetime | Non
         return None
     try:
         return email.utils.parsedate_to_datetime(date_str)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
 # ---------------------------------------------------------------------------
 # Core processing
 # ---------------------------------------------------------------------------
+
 
 def _process_eml(bank: str, raw_bytes: bytes) -> tuple[str | None, dict | None]:
     """Parse a single .eml file. Returns (error, transaction_dict)."""
@@ -115,6 +125,8 @@ def _process_eml(bank: str, raw_bytes: bytes) -> tuple[str | None, dict | None]:
         return str(e), None
 
     txn = parsed.transaction
+    if txn is None:
+        return None, None
     return None, {
         "bank": parsed.bank,
         "email_type": parsed.email_type,
@@ -156,7 +168,11 @@ async def populate() -> None:
         for eml_path in sorted(bank_dir.rglob("*.eml")):
             eml_files.append((bank_name, eml_path))
 
-    logger.info("Found %d .eml files across %d banks", len(eml_files), len({b for b, _ in eml_files}))
+    logger.info(
+        "Found %d .eml files across %d banks",
+        len(eml_files),
+        len({b for b, _ in eml_files}),
+    )
 
     stats = {"processed": 0, "transactions": 0, "failures": 0, "skipped_dup": 0}
     known_message_ids: set[str] = set()

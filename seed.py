@@ -10,6 +10,7 @@ doesn't already exist.
 Usage:
     uv run python seed.py
 """
+
 import asyncio
 from pathlib import Path
 
@@ -26,6 +27,7 @@ def _ensure_fernet_key():
         return
 
     from cryptography.fernet import Fernet
+
     key = Fernet.generate_key().decode()
 
     env_path = Path(".env")
@@ -33,76 +35,152 @@ def _ensure_fernet_key():
         f.write(f"EMAIL_SOURCE_MASTER_KEY={key}\n")
     print("Generated Fernet key and wrote to .env")
 
-# (provider, bank, sender, subject_filter, folder)
+
+# (provider, bank, sender, subject_filter, folder, email_kind)
+# email_kind: "statement" for CC/bank statement senders, None for transaction alerts
 RULES = [
     # Slice (Gmail)
-    ("gmail", "slice", "noreply@slice.bank.in", None, None),
-    ("gmail", "slice", "noreply@sliceit.com", None, None),
-
+    ("gmail", "slice", "noreply@slice.bank.in", None, None, None),
+    ("gmail", "slice", "noreply@sliceit.com", None, None, None),
+    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
+    (
+        "gmail",
+        "slice",
+        "noreply@slice.bank.in",
+        "slice bank statement",
+        None,
+        "statement",
+    ),
     # ICICI (Gmail)
-    ("gmail", "icici", "credit_cards@icicibank.com", None, None),
-    ("gmail", "icici", "customernotification@icici.bank.in", None, None),
-    ("gmail", "icici", "customercare@icicibank.com", None, None),
-    ("gmail", "icici", "customercare@icicibank.com", "Transaction alert", None),
+    ("gmail", "icici", "credit_cards@icicibank.com", None, None, None),
+    ("gmail", "icici", "customernotification@icici.bank.in", None, None, None),
+    ("gmail", "icici", "customercare@icicibank.com", None, None, None),
+    ("gmail", "icici", "customercare@icicibank.com", "Transaction alert", None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "icici", "credit_cards@icici.bank.in", "ICICI Bank Credit Card Statement", None),
-
+    (
+        "gmail",
+        "icici",
+        "credit_cards@icici.bank.in",
+        "ICICI Bank Credit Card Statement",
+        None,
+        "statement",
+    ),
+    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
+    (
+        "gmail",
+        "icici",
+        "estatement@icici.bank.in",
+        "ICICI Bank Statement",
+        None,
+        "statement",
+    ),
     # HDFC (Gmail)
-    ("gmail", "hdfc", "alerts@hdfcbank.bank.in", None, None),
+    ("gmail", "hdfc", "alerts@hdfcbank.bank.in", None, None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "hdfc", "Emailstatements.cards@hdfcbank.net", "statement", None),
-
+    (
+        "gmail",
+        "hdfc",
+        "Emailstatements.cards@hdfcbank.net",
+        "statement",
+        None,
+        "statement",
+    ),
     # Axis (Gmail)
-    ("gmail", "axis", "alerts@axis.bank.in", None, None),
+    ("gmail", "axis", "alerts@axis.bank.in", None, None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "axis", "cc.statements@axis.bank.in", "statement", None),
-
+    ("gmail", "axis", "cc.statements@axis.bank.in", "statement", None, "statement"),
     # IndusInd (Gmail)
-    ("gmail", "indusind", "transactionalert@indusind.com", None, None),
-    ("gmail", "indusind", "indusind_bank@indusind.com", None, None),
-    ("gmail", "indusind", "indusind_bank@indusind.com", "Transaction", None),
-    ("gmail", "indusind", "IndusInd_Bank@indusind.com", "Transaction", None),
-    ("gmail", "indusind", "indusind_bank@indusind.com", "Payment Confirmation", None),
-    ("gmail", "indusind", "IndusInd_Bank@indusind.com", "Payment Confirmation", None),
+    ("gmail", "indusind", "transactionalert@indusind.com", None, None, None),
+    ("gmail", "indusind", "indusind_bank@indusind.com", None, None, None),
+    ("gmail", "indusind", "indusind_bank@indusind.com", "Transaction", None, None),
+    ("gmail", "indusind", "IndusInd_Bank@indusind.com", "Transaction", None, None),
+    (
+        "gmail",
+        "indusind",
+        "indusind_bank@indusind.com",
+        "Payment Confirmation",
+        None,
+        None,
+    ),
+    (
+        "gmail",
+        "indusind",
+        "IndusInd_Bank@indusind.com",
+        "Payment Confirmation",
+        None,
+        None,
+    ),
     # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "indusind", "creditcard.estatements@indusind.com", "statement", None),
-
+    (
+        "gmail",
+        "indusind",
+        "creditcard.estatements@indusind.com",
+        "statement",
+        None,
+        "statement",
+    ),
+    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
+    (
+        "gmail",
+        "indusind",
+        "estatements@indusind.com",
+        "account statement",
+        None,
+        "statement",
+    ),
     # Kotak (Gmail)
-    ("gmail", "kotak", "BankAlerts@kotak.com", None, None),
-    ("gmail", "kotak", "no-reply@kotak.com", None, None),
-
+    ("gmail", "kotak", "BankAlerts@kotak.com", None, None, None),
+    ("gmail", "kotak", "no-reply@kotak.com", None, None, None),
     # SBI Card (Gmail)
-    ("gmail", "sbi", "onlinesbicard@sbicard.com", None, None),
-    ("gmail", "sbi", "paynet@billdesk.in", None, None),
+    ("gmail", "sbi", "onlinesbicard@sbicard.com", None, None, None),
+    ("gmail", "sbi", "paynet@billdesk.in", None, None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "sbi", "Statements@sbicard.com", "statement", None),
-
+    ("gmail", "sbi", "Statements@sbicard.com", "statement", None, "statement"),
     # HSBC (Gmail)
-    ("gmail", "hsbc", "hsbc@mail.hsbc.co.in", None, None),
-    ("gmail", "hsbc", "hsbc@mail.hsbc.co.in", "Credit Card", None),
-    ("gmail", "hsbc", "alerts@mail.hsbc.co.in", None, None),
-    ("gmail", "hsbc", "alerts@mail.hsbc.co.in", "Credit Card", None),
+    ("gmail", "hsbc", "hsbc@mail.hsbc.co.in", None, None, None),
+    ("gmail", "hsbc", "hsbc@mail.hsbc.co.in", "Credit Card", None, None),
+    ("gmail", "hsbc", "alerts@mail.hsbc.co.in", None, None, None),
+    ("gmail", "hsbc", "alerts@mail.hsbc.co.in", "Credit Card", None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "hsbc", "creditcardstatement@mail.hsbc.co.in", "statement", None),
-    ("gmail", "hsbc", "campaign@mail.hsbc.co.in", "statement", None),
-
+    (
+        "gmail",
+        "hsbc",
+        "creditcardstatement@mail.hsbc.co.in",
+        "statement",
+        None,
+        "statement",
+    ),
+    ("gmail", "hsbc", "campaign@mail.hsbc.co.in", "statement", None, "statement"),
     # IDFC FIRST (Gmail)
-    ("gmail", "idfc", "transaction.alerts@idfcfirstbank.com", None, None),
-    ("gmail", "idfc", "noreply@idfcfirstbank.com", None, None),
-    # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "idfc", "statement@idfcfirst.bank.in", "statement", None),
-
+    ("gmail", "idfc", "transaction.alerts@idfcfirstbank.com", None, None, None),
+    ("gmail", "idfc", "noreply@idfcfirstbank.com", None, None, None),
+    # CC + bank account e-statements (PDF attachments; fetcher tries CC then bank parser)
+    ("gmail", "idfc", "statement@idfcfirst.bank.in", "statement", None, "statement"),
     # Equitas (Gmail)
-    ("gmail", "equitas", "cc-alerts@equitas.bank.in", None, None),
-
+    ("gmail", "equitas", "cc-alerts@equitas.bank.in", None, None, None),
     # OneCard / BOBCARD (Gmail)
-    ("gmail", "onecard", "no-reply@getonecard.app", None, None),
+    ("gmail", "onecard", "no-reply@getonecard.app", None, None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "onecard", "statement@getonecard.app", "statement", None),
-
+    ("gmail", "onecard", "statement@getonecard.app", "statement", None, "statement"),
     # Union Bank of India (Gmail)
-    ("gmail", "uboi", "noreplyunionbankofindia@unionbankofindia.bank.in", None, None),
-    ("gmail", "uboi", "loanemail@unionbankofindia.bank", None, None),
+    (
+        "gmail",
+        "uboi",
+        "noreplyunionbankofindia@unionbankofindia.bank.in",
+        None,
+        None,
+        None,
+    ),
+    ("gmail", "uboi", "loanemail@unionbankofindia.bank", None, None, None),
+    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
+    (
+        "gmail",
+        "uboi",
+        "noreplyunionbank@ubi.bank.in",
+        "Statement of Account",
+        None,
+        "statement",
+    ),
 ]
 
 
@@ -110,33 +188,67 @@ async def main():
     await init_db()
     async with async_session() as session:
         existing = await session.execute(select(FetchRule))
-        existing_keys = {(r.provider, r.sender, r.subject) for r in existing.scalars().all()}
+        existing_rules = existing.scalars().all()
+        existing_keys = {(r.provider, r.sender, r.subject) for r in existing_rules}
+        # Build lookup for updating email_kind on existing rules
+        existing_by_key = {(r.provider, r.sender, r.subject): r for r in existing_rules}
+
+        # Build seed email_kind lookup
+        seed_kinds = {
+            (provider, sender, subject): email_kind
+            for provider, bank, sender, subject, folder, email_kind in RULES
+        }
 
         added = 0
-        for provider, bank, sender, subject, folder in RULES:
+        for provider, bank, sender, subject, folder, email_kind in RULES:
             if (provider, sender, subject) in existing_keys:
                 continue
-            session.add(FetchRule(
-                provider=provider,
-                bank=bank,
-                sender=sender,
-                subject=subject,
-                folder=folder,
-                enabled=True,
-            ))
+            session.add(
+                FetchRule(
+                    provider=provider,
+                    bank=bank,
+                    sender=sender,
+                    subject=subject,
+                    folder=folder,
+                    email_kind=email_kind,
+                    enabled=True,
+                )
+            )
             added += 1
+
+        # Backfill email_kind on existing rules that have NULL but seed specifies a value
+        updated_kind = 0
+        for key, email_kind in seed_kinds.items():
+            if email_kind and key in existing_by_key:
+                rule = existing_by_key[key]
+                if rule.email_kind is None:
+                    rule.email_kind = email_kind
+                    updated_kind += 1
 
         await session.commit()
         total = len(existing_keys) + added
-        print(f"Added {added} rules ({len(existing_keys)} already existed, {total} total)")
+        print(
+            f"Added {added} rules ({len(existing_keys)} already existed, {total} total)"
+        )
+        if updated_kind:
+            print(f"Updated email_kind on {updated_kind} existing rules")
 
     # Auto-assign source_id to rules that don't have one
     async with async_session() as session:
-        sources = {s.provider: s.id for s in (await session.execute(select(EmailSource))).scalars().all()}
+        sources = {
+            s.provider: s.id
+            for s in (await session.execute(select(EmailSource))).scalars().all()
+        }
         if sources:
-            orphan_rules = (await session.execute(
-                select(FetchRule).where(FetchRule.source_id.is_(None))
-            )).scalars().all()
+            orphan_rules = (
+                (
+                    await session.execute(
+                        select(FetchRule).where(FetchRule.source_id.is_(None))
+                    )
+                )
+                .scalars()
+                .all()
+            )
             linked = 0
             for rule in orphan_rules:
                 if rule.provider in sources:
@@ -147,7 +259,9 @@ async def main():
                 print(f"Auto-linked {linked} rules to existing sources")
         else:
             print()
-            print("NOTE: No email sources found. Add them at /sources, then re-run seed.py to auto-link.")
+            print(
+                "NOTE: No email sources found. Add them at /sources, then re-run seed.py to auto-link."
+            )
 
 
 if __name__ == "__main__":

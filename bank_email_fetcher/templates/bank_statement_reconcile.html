@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+{% block title %}Bank Statement #{{ upload.id }} - Ledger{% endblock %}
+{% block content %}
+
+{# ── Macros ─────────────────────────────────────────────────────────── #}
+
+{% macro imported_row(entry) %}
+<tr onclick="openDetailModal('/transactions/{{ entry.imported_txn_id }}/detail')" style="cursor: pointer;">
+    <td class="text-sm">{{ entry.date }}</td>
+    <td>
+        {% if entry.direction == "debit" %}
+        <span class="badge danger">debit</span>
+        {% else %}
+        <span class="badge success">credit</span>
+        {% endif %}
+    </td>
+    <td class="amt {% if entry.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if entry.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ entry.amount }}</td>
+    <td class="text-sm">{{ entry.narration }}</td>
+    <td class="text-sm text-muted">{{ entry.channel or "" }}</td>
+    <td class="text-sm text-muted">#{{ entry.imported_txn_id }}</td>
+</tr>
+{% endmacro %}
+
+{% macro matched_row(entry) %}
+<tr onclick="openDetailModal('/transactions/{{ entry.db_txn_id }}/detail')" style="cursor: pointer;">
+    <td class="text-sm">{{ entry.date }}</td>
+    <td>
+        {% if entry.direction == "debit" %}
+        <span class="badge danger">debit</span>
+        {% else %}
+        <span class="badge success">credit</span>
+        {% endif %}
+    </td>
+    <td class="amt {% if entry.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if entry.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ entry.amount }}</td>
+    <td class="text-sm">{{ entry.narration }}</td>
+    <td class="text-sm">{{ entry.db_counterparty or "" }}{% if entry.enriched %} <span class="badge success" title="Updated from statement narration">enriched</span>{% endif %}</td>
+    <td class="text-sm text-muted">{{ entry.channel or "" }}</td>
+</tr>
+{% endmacro %}
+
+{# ── Styles ─────────────────────────────────────────────────────────── #}
+
+<style>
+    .stmt-header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 2rem;
+        gap: 0.5rem;
+    }
+    .stmt-header h2 { margin: 0; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
+    .stmt-header-actions {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+    }
+    .stmt-summary {
+        background: var(--surface-muted);
+        border: 1px solid var(--border-light);
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 2rem;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 1.5rem;
+    }
+    .stmt-info { flex: 1 1 300px; min-width: 0; }
+    .stmt-info .meta-line {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.35rem;
+    }
+    .stmt-info .stmt-name {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+    }
+    .stmt-info .meta-secondary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.25rem;
+        font-size: 0.82rem;
+        opacity: 0.5;
+    }
+    .stmt-info .meta-secondary b { opacity: 1; font-weight: 600; }
+    .stmt-info .stmt-filename {
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        opacity: 0.2;
+        margin-top: 0.6rem;
+        word-break: break-all;
+        max-width: 350px;
+    }
+    .stmt-metrics {
+        display: flex;
+        align-items: flex-end;
+        gap: 0;
+        flex-shrink: 0;
+    }
+    .stmt-counts {
+        display: flex;
+        gap: 1.5rem;
+    }
+    .stmt-count { text-align: right; }
+    .stmt-count dt {
+        font-size: 0.62rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        opacity: 0.4;
+        margin-bottom: 0.2rem;
+    }
+    .stmt-count dd {
+        margin: 0;
+        font-size: 1.2rem;
+        font-weight: 600;
+        font-family: var(--font-mono);
+        line-height: 1.1;
+    }
+    .stmt-count.is-matched dd { color: var(--clr-credit); }
+    .bal-verify {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+        padding: 1rem 1.25rem;
+        border-radius: 8px;
+        font-size: 0.88rem;
+    }
+    .bal-verify.is-balanced { background: rgba(34,197,94,0.06); border: 1px solid rgba(34,197,94,0.15); }
+    .bal-verify.is-unbalanced { background: rgba(220,38,38,0.06); border: 1px solid rgba(220,38,38,0.15); }
+    .bal-verify dl { margin: 0; }
+    .bal-verify dt { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.4; margin-bottom: 0.15rem; }
+    .bal-verify dd { margin: 0; font-weight: 600; font-family: var(--font-mono); }
+    @media (max-width: 768px) {
+        .stmt-summary { flex-direction: column; align-items: flex-start; padding: 1.25rem; gap: 1.25rem; }
+    }
+</style>
+
+{# ── Error Banner ──────────────────────────────────────────────────── #}
+
+{% if error %}
+<article class="card" style="margin-bottom: 1.5rem; border-left: 3px solid var(--clr-debit);">
+    <strong>Error:</strong> {{ error }}
+</article>
+{% endif %}
+
+{# ── Header ─────────────────────────────────────────────────────────── #}
+
+<div class="stmt-header">
+    <h2>Bank Statement #{{ upload.id }}</h2>
+    <div class="stmt-header-actions">
+        {% if upload.email_id %}<a href="#" onclick="openDetailModal('/emails/{{ upload.email_id }}/detail'); return false;">View Email</a>{% endif %}
+        <a href="/statements">&larr; Back to Statements</a>
+    </div>
+</div>
+
+{# ── Password Required ──────────────────────────────────────────────── #}
+
+{% if upload.status == "password_required" %}
+<article class="card" style="margin-bottom: 1.5rem;">
+    <p><strong>This PDF is encrypted.</strong> Please provide the password to parse it.</p>
+    {% if upload.account and upload.account.statement_password_hint %}<p class="text-sm"><strong>Hint:</strong> {{ upload.account.statement_password_hint }}</p>{% endif %}
+    {% if upload.error %}<p class="text-sm text-muted">{{ upload.error }}</p>{% endif %}
+    <form method="post" action="/statements/bank/{{ upload.id }}/retry" style="display: flex; align-items: flex-end; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap;">
+        <label data-field>
+            Password
+            <input type="password" name="password" required autofocus>
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.35rem; align-self: flex-end; padding-bottom: 0.35rem;">
+            <input type="checkbox" name="save_password" value="1" checked>
+            <span class="text-sm">Save for future statements</span>
+        </label>
+        <button type="submit">Retry</button>
+    </form>
+</article>
+
+{% elif upload.status == "parse_error" %}
+<article class="card" style="margin-bottom: 1.5rem;">
+    <p><strong>Failed to parse this statement.</strong></p>
+    <p class="text-sm text-muted">{{ upload.error }}</p>
+</article>
+
+{% elif recon %}
+
+{# ── Statement Summary ─────────────────────────────────────────────── #}
+
+<div class="stmt-summary">
+    <div class="stmt-info">
+        <div class="meta-line">
+            <span class="badge">{{ upload.bank }}</span>
+            <span class="badge badge-pending">Bank Statement</span>
+        </div>
+        {% if upload.account_holder_name %}<div class="stmt-name">{{ upload.account_holder_name }}</div>{% endif %}
+        <div class="meta-secondary">
+            {% if upload.account_number %}<span>A/C <b>{{ upload.account_number }}</b></span>{% endif %}
+            {% if upload.statement_period_start and upload.statement_period_end %}
+            <span><b>{{ upload.statement_period_start }}</b> to <b>{{ upload.statement_period_end }}</b></span>
+            {% endif %}
+            <span>Parsed <b>{{ upload.parsed_txn_count or 0 }} txns</b></span>
+        </div>
+        {% if upload.filename %}<div class="stmt-filename" title="{{ upload.filename }}">{{ upload.filename }}</div>{% endif %}
+    </div>
+
+    <div class="stmt-metrics">
+        <div class="stmt-counts">
+            <dl class="stmt-count is-matched">
+                <dt>Matched</dt>
+                <dd>{{ recon.matched|length }} / {{ upload.parsed_txn_count or 0 }}</dd>
+            </dl>
+            <dl class="stmt-count">
+                <dt>Imported</dt>
+                <dd>{{ upload.imported_count or 0 }}</dd>
+            </dl>
+        </div>
+    </div>
+</div>
+
+{# ── Balance Verification ──────────────────────────────────────────── #}
+
+{% set bv = recon.balance_verification %}
+{% if bv %}
+<div class="bal-verify {% if bv.is_balanced %}is-balanced{% else %}is-unbalanced{% endif %}">
+    <dl>
+        <dt>Opening Balance</dt>
+        <dd>&#8377;{{ bv.opening_balance }}</dd>
+    </dl>
+    <dl>
+        <dt>Credits</dt>
+        <dd class="amt-credit">+&#8377;{{ recon.credit_total }}</dd>
+    </dl>
+    <dl>
+        <dt>Debits</dt>
+        <dd class="amt-debit">&minus;&#8377;{{ recon.debit_total }}</dd>
+    </dl>
+    <dl>
+        <dt>Computed Closing</dt>
+        <dd>&#8377;{{ bv.computed_closing }}</dd>
+    </dl>
+    <dl>
+        <dt>Closing Balance</dt>
+        <dd>&#8377;{{ bv.closing_balance }}</dd>
+    </dl>
+    <dl>
+        <dt>Delta</dt>
+        <dd style="{% if bv.is_balanced %}color: var(--clr-credit){% else %}color: var(--clr-debit); font-weight: 700{% endif %}">{{ bv.delta }}</dd>
+    </dl>
+</div>
+{% endif %}
+
+{# ── Imported Transactions ──────────────────────────────────────────── #}
+
+{% set imported = recon.missing|selectattr("imported")|list %}
+{% set unimported = recon.missing|rejectattr("imported")|list %}
+
+{% if imported %}
+<section style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Imported
+        <span class="text-sm text-muted">(from statement, not in DB before &mdash; {{ imported|length }} transactions)</span>
+    </h3>
+    <figure style="margin: 0;">
+        <div class="table">
+            <table>
+                <thead>
+                    <tr><th>Date</th><th>Direction</th><th>Amount</th><th>Narration</th><th>Channel</th><th>Txn ID</th></tr>
+                </thead>
+                <tbody>
+                    {% for entry in imported %}
+                    {{ imported_row(entry) }}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </figure>
+</section>
+{% endif %}
+
+{# ── Matched Transactions ──────────────────────────────────────────── #}
+
+{% if recon.matched %}
+<section style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Matched
+        <span class="text-sm text-muted">(in both statement and DB &mdash; {{ recon.matched|length }} transactions)</span>
+    </h3>
+    <figure style="margin: 0;">
+        <div class="table">
+            <table>
+                <thead>
+                    <tr><th>Date</th><th>Direction</th><th>Amount</th><th>Statement Narration</th><th>DB Counterparty</th><th>Channel</th></tr>
+                </thead>
+                <tbody>
+                    {% for entry in recon.matched %}
+                    {{ matched_row(entry) }}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </figure>
+</section>
+{% endif %}
+
+{# ── Missing (not imported) ─────────────────────────────────────────── #}
+
+{% if unimported %}
+<section style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1.05rem; font-weight: 700; margin-bottom: 0.75rem;">Missing
+        <span class="text-sm text-muted">(in statement but not matched or imported &mdash; {{ unimported|length }})</span>
+    </h3>
+    <figure style="margin: 0;">
+        <div class="table">
+            <table>
+                <thead>
+                    <tr><th>Date</th><th>Direction</th><th>Amount</th><th>Narration</th></tr>
+                </thead>
+                <tbody>
+                    {% for entry in unimported %}
+                    <tr>
+                        <td class="text-sm">{{ entry.date }}</td>
+                        <td>
+                            {% if entry.direction == "debit" %}
+                            <span class="badge danger">debit</span>
+                            {% else %}
+                            <span class="badge success">credit</span>
+                            {% endif %}
+                        </td>
+                        <td class="amt {% if entry.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}">{% if entry.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ entry.amount }}</td>
+                        <td class="text-sm">{{ entry.narration }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </figure>
+</section>
+{% endif %}
+
+{# ── Totals ──────────────────────────────────────────────────────────── #}
+
+<section style="margin-bottom: 1.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-light, #e5e7eb);">
+    <p style="font-size: 0.95rem;">
+        <strong>Debits:</strong> <span class="amt amt-debit">&#8377;{{ recon.debit_total }}</span>
+        &middot;
+        <strong>Credits:</strong> <span class="amt amt-credit">&#8377;{{ recon.credit_total }}</span>
+        &middot;
+        <span class="text-muted">{{ upload.parsed_txn_count or 0 }} total txns</span>
+    </p>
+</section>
+
+{% endif %}
+
+{% endblock %}

@@ -40,8 +40,12 @@ import tempfile
 from datetime import date as date_type, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from bank_email_fetcher.db import Account
 
 from cc_parser.extractor import extract_raw_pdf
 from cc_parser.parsers.factory import get_parser
@@ -417,7 +421,7 @@ async def _find_or_create_account(bank: str, parsed) -> "Account":
                     select(Account).where(
                         Account.bank == bank,
                         Account.type == "credit_card",
-                        Account.active == True,  # noqa: E712
+                        Account.active.is_(True),
                     )
                 )
             )
@@ -576,8 +580,8 @@ async def process_statement_email(
                         select(Account).where(
                             Account.bank == bank,
                             Account.type == "credit_card",
-                            Account.active == True,
-                        )  # noqa: E712
+                            Account.active.is_(True),
+                        )
                     )
                 )
                 .scalars()

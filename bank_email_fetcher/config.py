@@ -14,6 +14,7 @@ get_fernet() is a factory function (not a module-level instance) so that it
 can be called lazily from functions that need it. This avoids import-time
 failures when the key is not yet set in the environment.
 """
+
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -63,6 +64,7 @@ def get_fernet():
     key = settings.email_source_master_key
     if not key:
         import warnings
+
         key = Fernet.generate_key().decode()
         warnings.warn(
             "No EMAIL_SOURCE_MASTER_KEY set. Generated ephemeral key. "
