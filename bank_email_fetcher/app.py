@@ -24,9 +24,12 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from decimal import InvalidOperation
 from pathlib import Path
 from urllib.request import Request, urlopen
+
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -34,13 +37,14 @@ from fastapi import (
     FastAPI,
     File,
     Form,
+    Query,
     Request as FastAPIRequest,
     UploadFile,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, or_, select, update
 
 from bank_email_fetcher.config import settings
 from bank_email_fetcher.deps import verify_credentials
@@ -54,6 +58,7 @@ from bank_email_fetcher.db import (
     Email,
     EmailSource,
     FetchRule,
+    PaymentStatus,
     StatementUpload,
     Transaction,
     async_session,
@@ -274,15 +279,23 @@ SORT_COLUMNS = {
 @app.get("/transactions", response_class=HTMLResponse)
 async def transaction_list(
     request: FastAPIRequest,
-    bank: str = "",
-    account_id: str = "",
-    card_id: str = "",
-    direction: str = "",
-    date_from: str = "",
-    date_to: str = "",
-    sort: str = "date",
-    order: str = "desc",
-    page: int = 1,
+    bank: Annotated[str | None, Query(description="Filter by bank name")] = None,
+    account_id: Annotated[
+        str | None, Query(description="Filter by account ID")
+    ] = None,
+    card_id: Annotated[str | None, Query(description="Filter by card ID")] = None,
+    direction: Annotated[
+        str | None, Query(description="Filter by direction: debit or credit")
+    ] = None,
+    date_from: Annotated[
+        str | None, Query(description="Transaction date on/after (YYYY-MM-DD)")
+    ] = None,
+    date_to: Annotated[
+        str | None, Query(description="Transaction date on/before (YYYY-MM-DD)")
+    ] = None,
+    sort: Annotated[str, Query(description="Sort column")] = "date",
+    order: Annotated[str, Query(description="Sort order: asc or desc")] = "desc",
+    page: Annotated[int, Query(ge=1, description="Page number (1-indexed)")] = 1,
 ):
     async with async_session() as session:
         stmt = select(Transaction)
@@ -482,12 +495,69 @@ async def transaction_detail(txn_id: int, request: FastAPIRequest):
 
 
 @app.get("/emails", response_class=HTMLResponse)
-async def email_list(request: FastAPIRequest):
+async def email_list(
+    request: FastAPIRequest,
+    bank: Annotated[str | None, Query(description="Filter by bank (via rule)")] = None,
+    provider: Annotated[
+        str | None, Query(description="Filter by email provider")
+    ] = None,
+    status: Annotated[
+        str | None, Query(description="Filter by processing status")
+    ] = None,
+    date_from: Annotated[
+        str | None, Query(description="Received on/after (YYYY-MM-DD)")
+    ] = None,
+    date_to: Annotated[
+        str | None, Query(description="Received on/before (YYYY-MM-DD)")
+    ] = None,
+    q: Annotated[
+        str | None, Query(description="Case-insensitive search over sender and subject")
+    ] = None,
+):
     async with async_session() as session:
-        result = await session.execute(
-            select(Email).order_by(Email.id.desc()).limit(200)
-        )
-        emails = result.scalars().all()
+        stmt = select(Email)
+        needs_rule_join = bool(bank)
+        if needs_rule_join:
+            stmt = stmt.join(FetchRule, Email.rule_id == FetchRule.id).where(
+                FetchRule.bank == bank
+            )
+        if provider:
+            stmt = stmt.where(Email.provider == provider)
+        if status:
+            stmt = stmt.where(Email.status == status)
+        if date_from:
+            try:
+                stmt = stmt.where(Email.received_at >= date.fromisoformat(date_from))
+            except ValueError:
+                pass
+        if date_to:
+            try:
+                end_of_day = datetime.combine(
+                    date.fromisoformat(date_to), datetime.max.time()
+                )
+                stmt = stmt.where(Email.received_at <= end_of_day)
+            except ValueError:
+                pass
+        if q:
+            like = f"%{q}%"
+            stmt = stmt.where(or_(Email.sender.ilike(like), Email.subject.ilike(like)))
+        stmt = stmt.order_by(Email.id.desc()).limit(200)
+        emails = (await session.execute(stmt)).scalars().all()
+
+        # Distinct values for filter dropdowns
+        bank_result = await session.execute(select(FetchRule.bank).distinct())
+        banks = sorted([row[0] for row in bank_result.all() if row[0]])
+        provider_result = await session.execute(select(Email.provider).distinct())
+        providers = sorted([row[0] for row in provider_result.all() if row[0]])
+
+    filters = {
+        "bank": bank,
+        "provider": provider,
+        "status": status,
+        "date_from": date_from,
+        "date_to": date_to,
+        "q": q,
+    }
 
     return templates.TemplateResponse(
         request,
@@ -495,6 +565,9 @@ async def email_list(request: FastAPIRequest):
         {
             "active_page": "emails",
             "emails": emails,
+            "banks": banks,
+            "providers": providers,
+            "filters": filters,
         },
     )
 
@@ -611,14 +684,39 @@ async def auto_link_transactions(session, account):
 
 
 @app.get("/accounts", response_class=HTMLResponse)
-async def account_list(request: FastAPIRequest):
+async def account_list(
+    request: FastAPIRequest,
+    bank: Annotated[str | None, Query(description="Filter by bank name")] = None,
+    type: Annotated[
+        str | None,
+        Query(description="Filter by account type: bank_account, credit_card, debit_card"),
+    ] = None,
+    active: Annotated[
+        str | None, Query(description="Filter by active status: true or false")
+    ] = None,
+):
     async with async_session() as session:
-        result = await session.execute(select(Account).order_by(Account.id))
-        accounts = result.scalars().all()
+        stmt = select(Account)
+        if bank:
+            stmt = stmt.where(Account.bank == bank)
+        if type:
+            stmt = stmt.where(Account.type == type)
+        if active == "true":
+            stmt = stmt.where(Account.active.is_(True))
+        elif active == "false":
+            stmt = stmt.where(Account.active.is_(False))
+        stmt = stmt.order_by(Account.id)
+        accounts = (await session.execute(stmt)).scalars().all()
 
-        # Distinct banks from transactions for the add-form dropdown
-        bank_result = await session.execute(select(Transaction.bank).distinct())
-        banks = sorted([row[0] for row in bank_result.all() if row[0]])
+        # Distinct banks across accounts + transactions (union) for filter + add form
+        acct_banks = await session.execute(select(Account.bank).distinct())
+        txn_banks = await session.execute(select(Transaction.bank).distinct())
+        all_banks = {row[0] for row in acct_banks.all() if row[0]} | {
+            row[0] for row in txn_banks.all() if row[0]
+        }
+        banks = sorted(all_banks)
+
+    filters = {"bank": bank, "type": type, "active": active}
 
     return templates.TemplateResponse(
         request,
@@ -627,6 +725,7 @@ async def account_list(request: FastAPIRequest):
             "active_page": "accounts",
             "accounts": accounts,
             "banks": banks,
+            "filters": filters,
         },
     )
 
@@ -996,18 +1095,45 @@ async def test_source(source_id: int):
 
 
 @app.get("/rules", response_class=HTMLResponse)
-async def rule_list(request: FastAPIRequest):
+async def rule_list(
+    request: FastAPIRequest,
+    bank: Annotated[str | None, Query(description="Filter by bank")] = None,
+    source_id: Annotated[
+        str | None, Query(description="Filter by email source ID")
+    ] = None,
+    enabled: Annotated[
+        str | None, Query(description="Filter by enabled status: true or false")
+    ] = None,
+):
     async with async_session() as session:
-        result = await session.execute(select(FetchRule).order_by(FetchRule.id))
-        rules = result.scalars().all()
+        stmt = select(FetchRule)
+        if bank:
+            stmt = stmt.where(FetchRule.bank == bank)
+        if source_id:
+            try:
+                stmt = stmt.where(FetchRule.source_id == int(source_id))
+            except ValueError:
+                pass
+        if enabled == "true":
+            stmt = stmt.where(FetchRule.enabled.is_(True))
+        elif enabled == "false":
+            stmt = stmt.where(FetchRule.enabled.is_(False))
+        stmt = stmt.order_by(FetchRule.id)
+        rules = (await session.execute(stmt)).scalars().all()
 
-        # Load sources for the dropdown in the add-rule form
+        # Distinct banks present in rules (for filter dropdown)
+        bank_result = await session.execute(select(FetchRule.bank).distinct())
+        banks = sorted([row[0] for row in bank_result.all() if row[0]])
+
+        # Load sources for the add-rule form dropdown AND the filter dropdown
         source_result = await session.execute(
             select(EmailSource)
             .where(EmailSource.active.is_(True))
             .order_by(EmailSource.id)
         )
         sources = source_result.scalars().all()
+
+    filters = {"bank": bank, "source_id": source_id, "enabled": enabled}
 
     return templates.TemplateResponse(
         request,
@@ -1016,7 +1142,9 @@ async def rule_list(request: FastAPIRequest):
             "active_page": "rules",
             "rules": rules,
             "sources": sources,
+            "banks": banks,
             "supported_banks": SUPPORTED_BANKS,
+            "filters": filters,
         },
     )
 
@@ -1422,28 +1550,67 @@ def _unlink_statement_file(path_str: str | None) -> None:
 
 
 @app.get("/statements", response_class=HTMLResponse)
-async def statements_list(request: FastAPIRequest):
+async def statements_list(
+    request: FastAPIRequest,
+    type: Annotated[
+        str | None, Query(description="Filter by statement type: cc or bank")
+    ] = None,
+    bank: Annotated[str | None, Query(description="Filter by bank name")] = None,
+    account_id: Annotated[
+        str | None, Query(description="Filter by account ID")
+    ] = None,
+    status: Annotated[
+        str | None, Query(description="Filter by upload status")
+    ] = None,
+    date_from: Annotated[
+        str | None, Query(description="Uploaded on/after (YYYY-MM-DD)")
+    ] = None,
+    date_to: Annotated[
+        str | None, Query(description="Uploaded on/before (YYYY-MM-DD)")
+    ] = None,
+):
+    def _apply_common_filters(stmt, model):
+        if bank:
+            stmt = stmt.where(model.bank == bank)
+        if account_id:
+            try:
+                stmt = stmt.where(model.account_id == int(account_id))
+            except ValueError:
+                pass
+        if status:
+            stmt = stmt.where(model.status == status)
+        if date_from:
+            try:
+                stmt = stmt.where(model.created_at >= date.fromisoformat(date_from))
+            except ValueError:
+                pass
+        if date_to:
+            try:
+                end_of_day = datetime.combine(
+                    date.fromisoformat(date_to), datetime.max.time()
+                )
+                stmt = stmt.where(model.created_at <= end_of_day)
+            except ValueError:
+                pass
+        return stmt
+
     async with async_session() as session:
-        cc_uploads = (
-            (
-                await session.execute(
-                    select(StatementUpload).order_by(StatementUpload.created_at.desc())
-                )
+        if type == "bank":
+            cc_uploads = []
+        else:
+            cc_stmt = _apply_common_filters(select(StatementUpload), StatementUpload)
+            cc_stmt = cc_stmt.order_by(StatementUpload.created_at.desc())
+            cc_uploads = (await session.execute(cc_stmt)).scalars().all()
+
+        if type == "cc":
+            bank_uploads = []
+        else:
+            bank_stmt = _apply_common_filters(
+                select(BankStatementUpload), BankStatementUpload
             )
-            .scalars()
-            .all()
-        )
-        bank_uploads = (
-            (
-                await session.execute(
-                    select(BankStatementUpload).order_by(
-                        BankStatementUpload.created_at.desc()
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
+            bank_stmt = bank_stmt.order_by(BankStatementUpload.created_at.desc())
+            bank_uploads = (await session.execute(bank_stmt)).scalars().all()
+
         cc_accounts = (
             (
                 await session.execute(
@@ -1467,17 +1634,45 @@ async def statements_list(request: FastAPIRequest):
             .all()
         )
 
+        # Distinct banks across both upload tables for filter dropdown
+        cc_banks = (
+            await session.execute(select(StatementUpload.bank).distinct())
+        ).all()
+        bank_banks = (
+            await session.execute(select(BankStatementUpload.bank).distinct())
+        ).all()
+        banks = sorted({row[0] for row in cc_banks + bank_banks if row[0]})
+
     # Tag each upload with its type so templates can distinguish them
     for u in cc_uploads:
         u._statement_type = "cc"
     for u in bank_uploads:
         u._statement_type = "bank"
-    # Merge and sort by created_at descending
     uploads = sorted(
         [*cc_uploads, *bank_uploads],
         key=lambda u: u.created_at or datetime.min,
         reverse=True,
     )
+
+    # Build JSON for cascading account dropdown (bank -> accounts)
+    accounts_by_bank: dict[str, list] = {}
+    for a in [*cc_accounts, *bank_accounts]:
+        accounts_by_bank.setdefault(a.bank, []).append(
+            {
+                "id": a.id,
+                "label": a.label,
+                "type": a.type,
+            }
+        )
+
+    filters = {
+        "type": type,
+        "bank": bank,
+        "account_id": account_id,
+        "status": status,
+        "date_from": date_from,
+        "date_to": date_to,
+    }
 
     return templates.TemplateResponse(
         request,
@@ -1487,6 +1682,9 @@ async def statements_list(request: FastAPIRequest):
             "uploads": uploads,
             "cc_accounts": cc_accounts,
             "bank_accounts": bank_accounts,
+            "banks": banks,
+            "accounts_json": json.dumps(accounts_by_bank),
+            "filters": filters,
         },
     )
 
@@ -2142,6 +2340,52 @@ async def statement_delete(upload_id: int):
         _unlink_statement_file(upload.file_path)
         await session.delete(upload)
         await session.commit()
+
+    return RedirectResponse(url="/statements", status_code=303)
+
+
+@app.post("/statements/{upload_id}/payment")
+async def statement_payment(upload_id: int, action: str = Form(...)):
+    """Manually toggle a CC statement's payment status (mirrors the Telegram button).
+
+    action=mark_paid   -> set PAID, stamp payment_paid_at, fill payment_paid_amount
+                         from total_amount_due if parseable.
+    action=mark_unpaid -> revert to UNPAID and replay reminders. Preserves any
+                         real partial payment amount (from bank auto-detection)
+                         so history isn't lost; only clears the manual full-pay
+                         marker. No-op if there is no due date tracked.
+    """
+    from bank_email_fetcher.statements import parse_cc_amount
+
+    async with async_session() as session:
+        upload = await session.get(StatementUpload, upload_id)
+        if not upload:
+            return RedirectResponse(url="/statements", status_code=303)
+
+        if action == "mark_paid":
+            if upload.payment_status != PaymentStatus.PAID:
+                upload.payment_status = PaymentStatus.PAID
+                upload.payment_paid_at = datetime.now(timezone.utc)
+                if upload.total_amount_due:
+                    try:
+                        upload.payment_paid_amount = parse_cc_amount(
+                            upload.total_amount_due
+                        )
+                    except (ValueError, InvalidOperation):
+                        pass
+                await session.commit()
+        elif action == "mark_unpaid":
+            if upload.payment_status is not None:
+                was_partial = upload.payment_status == PaymentStatus.PARTIALLY_PAID
+                upload.payment_status = (
+                    PaymentStatus.PARTIALLY_PAID if was_partial else PaymentStatus.UNPAID
+                )
+                upload.payment_paid_at = None
+                if not was_partial:
+                    upload.payment_paid_amount = 0
+                upload.payment_sent_offsets = "[]"
+                upload.payment_last_reminded_at = None
+                await session.commit()
 
     return RedirectResponse(url="/statements", status_code=303)
 

@@ -7,6 +7,57 @@
     <span class="result-count">{{ emails|length }} email{{ "s" if emails|length != 1 }}</span>
 </div>
 
+<form method="get" class="filter-bar" id="emails-filter-form">
+    <label data-field>
+        Bank
+        <select name="bank">
+            <option value="">All Banks</option>
+            {% for b in banks %}
+            <option value="{{ b }}" {% if filters.bank == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label data-field>
+        Provider
+        <select name="provider">
+            <option value="">All Providers</option>
+            {% for p in providers %}
+            <option value="{{ p }}" {% if filters.provider == p %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label data-field>
+        Status
+        <select name="status">
+            <option value="">All Statuses</option>
+            <option value="pending" {% if filters.status == "pending" %}selected{% endif %}>Pending</option>
+            <option value="parsed" {% if filters.status == "parsed" %}selected{% endif %}>Parsed</option>
+            <option value="failed" {% if filters.status == "failed" %}selected{% endif %}>Failed</option>
+            <option value="skipped" {% if filters.status == "skipped" %}selected{% endif %}>Skipped</option>
+        </select>
+    </label>
+    <label data-field>
+        Received From
+        <input type="date" name="date_from" value="{{ filters.date_from or '' }}">
+    </label>
+    <label data-field>
+        Received To
+        <input type="date" name="date_to" value="{{ filters.date_to or '' }}">
+    </label>
+    <label data-field style="min-width: 220px; flex: 1 1 220px;">
+        Search
+        <input type="search" name="q" value="{{ filters.q or '' }}" placeholder="Search sender or subject...">
+    </label>
+    {% if filters.bank or filters.provider or filters.status or filters.date_from or filters.date_to or filters.q %}
+    <a
+        href="/emails"
+        aria-label="Clear filters"
+        title="Clear filters"
+        style="display: inline-flex; align-items: center; justify-content: center; width: 2rem; min-width: 2rem; height: 2rem; padding: 0; border-radius: 999px; border: 1px solid #dc2626; color: #dc2626; text-decoration: none; font-size: 1rem; line-height: 1; align-self: flex-end;"
+    >&times;</a>
+    {% endif %}
+</form>
+
 <section>
 {% if emails %}
 <figure style="margin: 0;">
@@ -74,6 +125,19 @@
 
 {% block scripts %}
 <script>
+const emailsFilterForm = document.getElementById("emails-filter-form");
+if (emailsFilterForm) {
+    emailsFilterForm.querySelectorAll('select, input[type="date"]').forEach((f) => {
+        f.addEventListener("change", () => {
+            if (typeof emailsFilterForm.requestSubmit === "function") {
+                emailsFilterForm.requestSubmit();
+            } else {
+                emailsFilterForm.submit();
+            }
+        });
+    });
+}
+
 async function reparseEmail(btn, emailId) {
     btn.disabled = true;
     btn.textContent = 'Reparsing…';

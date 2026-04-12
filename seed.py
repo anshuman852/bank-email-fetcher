@@ -42,19 +42,9 @@ RULES = [
     # Slice (Gmail)
     ("gmail", "slice", "noreply@slice.bank.in", None, None, None),
     ("gmail", "slice", "noreply@sliceit.com", None, None, None),
-    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
-    (
-        "gmail",
-        "slice",
-        "noreply@slice.bank.in",
-        "slice bank statement",
-        None,
-        "statement",
-    ),
     # ICICI (Gmail)
     ("gmail", "icici", "credit_cards@icicibank.com", None, None, None),
     ("gmail", "icici", "customernotification@icici.bank.in", None, None, None),
-    ("gmail", "icici", "customercare@icicibank.com", None, None, None),
     ("gmail", "icici", "customercare@icicibank.com", "Transaction alert", None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
     (
@@ -62,15 +52,6 @@ RULES = [
         "icici",
         "credit_cards@icici.bank.in",
         "ICICI Bank Credit Card Statement",
-        None,
-        "statement",
-    ),
-    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
-    (
-        "gmail",
-        "icici",
-        "estatement@icici.bank.in",
-        "ICICI Bank Statement",
         None,
         "statement",
     ),
@@ -91,7 +72,6 @@ RULES = [
     ("gmail", "axis", "cc.statements@axis.bank.in", "statement", None, "statement"),
     # IndusInd (Gmail)
     ("gmail", "indusind", "transactionalert@indusind.com", None, None, None),
-    ("gmail", "indusind", "indusind_bank@indusind.com", None, None, None),
     ("gmail", "indusind", "indusind_bank@indusind.com", "Transaction", None, None),
     ("gmail", "indusind", "IndusInd_Bank@indusind.com", "Transaction", None, None),
     (
@@ -119,15 +99,6 @@ RULES = [
         None,
         "statement",
     ),
-    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
-    (
-        "gmail",
-        "indusind",
-        "estatements@indusind.com",
-        "account statement",
-        None,
-        "statement",
-    ),
     # Kotak (Gmail)
     ("gmail", "kotak", "BankAlerts@kotak.com", None, None, None),
     ("gmail", "kotak", "no-reply@kotak.com", None, None, None),
@@ -137,9 +108,7 @@ RULES = [
     # CC e-statements (PDF attachments processed by cc-parser)
     ("gmail", "sbi", "Statements@sbicard.com", "statement", None, "statement"),
     # HSBC (Gmail)
-    ("gmail", "hsbc", "hsbc@mail.hsbc.co.in", None, None, None),
     ("gmail", "hsbc", "hsbc@mail.hsbc.co.in", "Credit Card", None, None),
-    ("gmail", "hsbc", "alerts@mail.hsbc.co.in", None, None, None),
     ("gmail", "hsbc", "alerts@mail.hsbc.co.in", "Credit Card", None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
     (
@@ -150,7 +119,6 @@ RULES = [
         None,
         "statement",
     ),
-    ("gmail", "hsbc", "campaign@mail.hsbc.co.in", "statement", None, "statement"),
     # IDFC FIRST (Gmail)
     ("gmail", "idfc", "transaction.alerts@idfcfirstbank.com", None, None, None),
     ("gmail", "idfc", "noreply@idfcfirstbank.com", None, None, None),
@@ -170,16 +138,6 @@ RULES = [
         None,
         None,
         None,
-    ),
-    ("gmail", "uboi", "loanemail@unionbankofindia.bank", None, None, None),
-    # Bank account e-statements (PDF attachments processed by bank-statement-parser)
-    (
-        "gmail",
-        "uboi",
-        "noreplyunionbank@ubi.bank.in",
-        "Statement of Account",
-        None,
-        "statement",
     ),
 ]
 

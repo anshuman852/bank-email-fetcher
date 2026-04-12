@@ -2,62 +2,172 @@
 {% block title %}Statements - Ledger{% endblock %}
 {% block content %}
 
+<style>
+    .upload-card { margin-bottom: 1.5rem; }
+    .upload-header {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 0.9rem; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .upload-header h3 { margin: 0; font-size: 1rem; font-weight: 700; }
+
+    .type-toggle {
+        display: inline-flex; gap: 0; background: var(--surface-muted);
+        padding: 0.2rem; border-radius: 8px; border: 1px solid var(--border-light);
+    }
+    .type-toggle label {
+        font-size: 0.78rem; font-weight: 600; cursor: pointer;
+        padding: 0.3rem 0.75rem; border-radius: 6px;
+        margin: 0; transition: background 0.15s ease, color 0.15s ease;
+        opacity: 0.65;
+    }
+    .type-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .type-toggle label:has(input:checked) {
+        background: var(--nav-pill-active-bg);
+        color: var(--nav-pill-active-fg);
+        opacity: 1;
+    }
+
+    .compact-form {
+        display: flex; align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;
+    }
+    .compact-form label[data-field] { margin: 0; }
+    .compact-form input:not([type="file"]),
+    .compact-form select,
+    .compact-form button { margin-block-end: 0; }
+
+    .file-picker {
+        display: inline-flex; align-items: center; gap: 0.5rem;
+        border: 1px solid var(--border-light); border-radius: 6px;
+        padding: 0 0.6rem; background: var(--surface-muted);
+        cursor: pointer; height: 38px; overflow: hidden;
+        position: relative; font-size: 0.82rem; min-width: 240px;
+    }
+    .file-picker:hover { border-color: var(--nav-pill-active-bg); }
+    .file-picker input[type="file"] {
+        position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%;
+    }
+    .file-picker .file-name {
+        flex: 1; opacity: 0.6; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis;
+    }
+    .file-picker.has-file .file-name { opacity: 1; }
+    .file-picker .browse-chip {
+        font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.04em; padding: 0.2rem 0.5rem; border-radius: 4px;
+        background: var(--nav-pill-active-bg); color: var(--nav-pill-active-fg);
+    }
+</style>
+
 <div class="section-header">
     <h2>Statements</h2>
-    <form method="post" action="/statements/reprocess-failed" style="margin: 0;">
-        <button type="submit" onclick="return confirm('Reprocess all failed emails that have PDF attachments as CC or bank statements?');">Reprocess Failed Emails</button>
-    </form>
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <span class="result-count">{{ uploads|length }} result{{ "s" if uploads|length != 1 }}</span>
+        <form method="post" action="/statements/reprocess-failed" style="margin: 0;">
+            <button type="submit" class="text-sm" onclick="return confirm('Reprocess all failed emails that have PDF attachments as CC or bank statements?');">Reprocess Failed Emails</button>
+        </form>
+    </div>
 </div>
 
-<article class="card" style="margin-bottom: 1.5rem;">
-    <h3 style="margin-top: 0; margin-bottom: 0.75rem;">Upload CC Statement</h3>
-    <form method="post" action="/statements/upload" enctype="multipart/form-data" style="display: flex; align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
-        <label data-field>
+<article class="card upload-card">
+    <div class="upload-header">
+        <h3>Upload Statement</h3>
+        <div class="type-toggle" id="upload-type-toggle">
+            <label>
+                <input type="radio" name="upload_type" value="cc" checked>
+                Credit Card
+            </label>
+            <label>
+                <input type="radio" name="upload_type" value="bank" {% if not bank_accounts %}disabled{% endif %}>
+                Bank Account
+            </label>
+        </div>
+    </div>
+
+    {% macro upload_form(form_id, action, accounts, placeholder, hidden=False) %}
+    <form id="{{ form_id }}" method="post" action="{{ action }}" enctype="multipart/form-data" class="compact-form"{% if hidden %} style="display: none;"{% endif %}>
+        <label data-field style="flex: 1; min-width: 200px;">
             Account
             <select name="account_id" required>
-                <option value="">Select credit card...</option>
-                {% for acc in cc_accounts %}
+                <option value="">{{ placeholder }}</option>
+                {% for acc in accounts %}
                 <option value="{{ acc.id }}">{{ acc.label }} ({{ acc.bank }})</option>
                 {% endfor %}
             </select>
         </label>
-        <label data-field>
+        <label data-field style="flex: 1.4; min-width: 240px;">
             Statement PDF
-            <input type="file" name="file" accept=".pdf" required>
+            <div class="file-picker" data-picker>
+                <span class="file-name">Choose PDF file...</span>
+                <span class="browse-chip">Browse</span>
+                <input type="file" name="file" accept=".pdf" required>
+            </div>
         </label>
-        <label data-field>
+        <label data-field style="width: 160px;">
             Password <small class="text-muted">(if encrypted)</small>
             <input type="password" name="password" placeholder="Optional">
         </label>
         <button type="submit">Upload &amp; Reconcile</button>
     </form>
+    {% endmacro %}
+
+    {{ upload_form("upload-form-cc", "/statements/upload", cc_accounts, "Select credit card...") }}
+    {% if bank_accounts %}
+    {{ upload_form("upload-form-bank", "/statements/upload-bank", bank_accounts, "Select bank account...", hidden=True) }}
+    {% endif %}
 </article>
 
-{% if bank_accounts %}
-<article class="card" style="margin-bottom: 1.5rem;">
-    <h3 style="margin-top: 0; margin-bottom: 0.75rem;">Upload Bank Account Statement</h3>
-    <form method="post" action="/statements/upload-bank" enctype="multipart/form-data" style="display: flex; align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
-        <label data-field>
-            Account
-            <select name="account_id" required>
-                <option value="">Select bank account...</option>
-                {% for acc in bank_accounts %}
-                <option value="{{ acc.id }}">{{ acc.label }} ({{ acc.bank }})</option>
-                {% endfor %}
-            </select>
-        </label>
-        <label data-field>
-            Statement PDF
-            <input type="file" name="file" accept=".pdf" required>
-        </label>
-        <label data-field>
-            Password <small class="text-muted">(if encrypted)</small>
-            <input type="password" name="password" placeholder="Optional">
-        </label>
-        <button type="submit">Upload &amp; Reconcile</button>
-    </form>
-</article>
-{% endif %}
+<form method="get" class="filter-bar" id="statements-filter-form">
+    <label data-field>
+        Type
+        <select name="type">
+            <option value="">All Types</option>
+            <option value="cc" {% if filters.type == "cc" %}selected{% endif %}>Credit Card</option>
+            <option value="bank" {% if filters.type == "bank" %}selected{% endif %}>Bank Account</option>
+        </select>
+    </label>
+    <label data-field>
+        Bank
+        <select name="bank">
+            <option value="">All Banks</option>
+            {% for b in banks %}
+            <option value="{{ b }}" {% if filters.bank == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label data-field>
+        Account
+        <select name="account_id" id="account-filter">
+            <option value="">All Accounts</option>
+        </select>
+    </label>
+    <label data-field>
+        Status
+        <select name="status">
+            <option value="">All Statuses</option>
+            <option value="parsed" {% if filters.status == "parsed" %}selected{% endif %}>Parsed</option>
+            <option value="imported" {% if filters.status == "imported" %}selected{% endif %}>Imported</option>
+            <option value="partial_import" {% if filters.status == "partial_import" %}selected{% endif %}>Partial</option>
+            <option value="password_required" {% if filters.status == "password_required" %}selected{% endif %}>Needs Password</option>
+            <option value="parse_error" {% if filters.status == "parse_error" %}selected{% endif %}>Error</option>
+        </select>
+    </label>
+    <label data-field>
+        Date From
+        <input type="date" name="date_from" value="{{ filters.date_from or '' }}">
+    </label>
+    <label data-field>
+        Date To
+        <input type="date" name="date_to" value="{{ filters.date_to or '' }}">
+    </label>
+    {% if filters.type or filters.bank or filters.account_id or filters.status or filters.date_from or filters.date_to %}
+    <a
+        href="/statements"
+        aria-label="Clear filters"
+        title="Clear filters"
+        style="display: inline-flex; align-items: center; justify-content: center; width: 2rem; min-width: 2rem; height: 2rem; padding: 0; border-radius: 999px; border: 1px solid #dc2626; color: #dc2626; text-decoration: none; font-size: 1rem; line-height: 1; align-self: flex-end;"
+    >&times;</a>
+    {% endif %}
+</form>
 
 <section>
 {% if uploads %}
@@ -72,6 +182,7 @@
                     <th>Account</th>
                     <th>File</th>
                     <th>Status</th>
+                    <th>Payment</th>
                     <th>Matched</th>
                     <th>Missing</th>
                     <th>Imported</th>
@@ -88,7 +199,7 @@
                     <td><span class="badge{% if is_bank %} badge-pending{% endif %}">{{ "Bank" if is_bank else "CC" }}</span></td>
                     <td><span class="badge">{{ u.bank }}</span></td>
                     <td class="text-sm">{% if u.account %}<a href="/accounts/{{ u.account.id }}/edit" onclick="event.stopPropagation()">{{ u.account.label }}</a>{% else %}&mdash;{% endif %}</td>
-                    <td class="text-sm text-muted">{{ u.filename }}</td>
+                    <td class="text-sm text-muted"><span class="truncate" title="{{ u.filename }}">{{ u.filename }}</span></td>
                     <td>
                         {% if u.status == "parsed" %}
                         <span class="badge">parsed</span>
@@ -104,11 +215,48 @@
                         <span class="badge">{{ u.status }}</span>
                         {% endif %}
                     </td>
+                    <td>
+                        {% if is_bank or not u.payment_status %}
+                        <span class="text-muted">&mdash;</span>
+                        {% else %}
+                        {% set pay_tip_parts = [] %}
+                        {% if u.due_date %}{% set _ = pay_tip_parts.append("Due " ~ u.due_date) %}{% endif %}
+                        {% if u.total_amount_due %}{% set _ = pay_tip_parts.append("Amount due \u20b9" ~ u.total_amount_due) %}{% endif %}
+                        {% if u.payment_paid_at %}{% set _ = pay_tip_parts.append("Paid on " ~ u.payment_paid_at.strftime("%d %b %Y")) %}{% endif %}
+                        {% if u.payment_paid_amount and u.payment_paid_amount > 0 %}{% set _ = pay_tip_parts.append("Paid \u20b9" ~ ("%.2f"|format(u.payment_paid_amount|float))) %}{% endif %}
+                        {% set pay_tip = pay_tip_parts|join(" \u00b7 ") %}
+                        {% if u.payment_status == "paid" %}
+                        <span class="badge success" title="{{ pay_tip }}">paid</span>
+                        {% elif u.payment_status == "late" %}
+                        <span class="badge danger" title="{{ pay_tip }}">late</span>
+                        {% elif u.payment_status == "partially_paid" %}
+                        <span class="badge badge-pending" title="{{ pay_tip }}">partial</span>
+                        {% elif u.payment_status == "unpaid" %}
+                        <span class="badge badge-pending" title="{{ pay_tip }}">unpaid</span>
+                        {% else %}
+                        <span class="badge" title="{{ pay_tip }}">{{ u.payment_status }}</span>
+                        {% endif %}
+                        {% endif %}
+                    </td>
                     <td class="text-sm">{{ u.matched_count or 0 }}</td>
                     <td class="text-sm">{{ u.missing_count or 0 }}</td>
                     <td class="text-sm">{{ u.imported_count or 0 }}</td>
                     <td style="white-space: nowrap;">
                         {% if u.email_id %}<a href="#" onclick="event.stopPropagation(); openDetailModal('/emails/{{ u.email_id }}/detail'); return false;" class="text-sm">Email</a> &middot; {% endif %}
+                        {% if not is_bank and u.payment_status %}
+                        {% if u.payment_status == "paid" %}
+                        <form method="post" action="/statements/{{ u.id }}/payment" onclick="event.stopPropagation();" style="display: inline;">
+                            <input type="hidden" name="action" value="mark_unpaid">
+                            <button type="submit" class="text-sm">Mark Unpaid</button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="/statements/{{ u.id }}/payment" onclick="event.stopPropagation();" style="display: inline;">
+                            <input type="hidden" name="action" value="mark_paid">
+                            <button type="submit" class="text-sm">Mark Paid</button>
+                        </form>
+                        {% endif %}
+                        &middot;
+                        {% endif %}
                         <form method="post" action="{{ delete_url }}" onclick="event.stopPropagation();" onsubmit="return confirm('Delete this statement upload?');" style="display: inline;">
                             <button type="submit" class="text-sm" style="color: #dc2626;">Delete</button>
                         </form>
@@ -121,10 +269,94 @@
 </figure>
 {% else %}
 <article class="card empty-state">
-    <p>No statements uploaded yet.</p>
-    <p class="text-sm text-muted">Upload a credit card or bank account statement PDF to reconcile against existing transactions.</p>
+    <p>No statements match your filters.</p>
+    <p class="text-sm text-muted">Try adjusting the filters above, or upload a PDF to get started.</p>
 </article>
 {% endif %}
 </section>
+
+<script>
+    // ---- Upload form: type toggle ----
+    const typeToggle = document.getElementById("upload-type-toggle");
+    const ccForm = document.getElementById("upload-form-cc");
+    const bankForm = document.getElementById("upload-form-bank");
+
+    if (typeToggle) {
+        typeToggle.querySelectorAll('input[name="upload_type"]').forEach((r) => {
+            r.addEventListener("change", () => {
+                const isBank = r.value === "bank" && r.checked;
+                if (ccForm) ccForm.style.display = isBank ? "none" : "flex";
+                if (bankForm) bankForm.style.display = isBank ? "flex" : "none";
+            });
+        });
+    }
+
+    // ---- File picker: show selected filename ----
+    document.querySelectorAll(".file-picker").forEach((picker) => {
+        const input = picker.querySelector('input[type="file"]');
+        const name = picker.querySelector(".file-name");
+        if (!input || !name) return;
+        input.addEventListener("change", () => {
+            if (input.files && input.files[0]) {
+                name.textContent = input.files[0].name;
+                picker.classList.add("has-file");
+            } else {
+                name.textContent = "Choose PDF file...";
+                picker.classList.remove("has-file");
+            }
+        });
+    });
+
+    // ---- Filter bar: cascading account dropdown + auto-submit ----
+    const accountsByBank = {{ accounts_json|safe }};
+    const filterForm = document.getElementById("statements-filter-form");
+    const bankFilter = filterForm && filterForm.querySelector('select[name="bank"]');
+    const typeFilter = filterForm && filterForm.querySelector('select[name="type"]');
+    const accountFilter = document.getElementById("account-filter");
+    const selectedAccountId = "{{ filters.account_id or '' }}";
+    let skipAutoSubmit = true;
+
+    function populateAccounts() {
+        if (!bankFilter || !typeFilter || !accountFilter) return;
+        const b = bankFilter.value;
+        const t = typeFilter.value; // "", "cc", "bank"
+        accountFilter.innerHTML = '<option value="">All Accounts</option>';
+        let accts = [];
+        if (b) {
+            accts = (accountsByBank[b] || []).map((a) => ({ ...a, bank: b }));
+        } else {
+            for (const [bn, as] of Object.entries(accountsByBank)) {
+                for (const a of as) accts.push({ ...a, bank: bn });
+            }
+        }
+        if (t === "cc") accts = accts.filter((a) => a.type === "credit_card");
+        if (t === "bank") accts = accts.filter((a) => a.type === "bank_account");
+        for (const a of accts) {
+            const opt = document.createElement("option");
+            opt.value = a.id;
+            opt.textContent = a.bank + " \u2014 " + a.label;
+            if (String(a.id) === selectedAccountId) opt.selected = true;
+            accountFilter.appendChild(opt);
+        }
+    }
+    populateAccounts();
+    skipAutoSubmit = false;
+
+    if (bankFilter) bankFilter.addEventListener("change", populateAccounts);
+    if (typeFilter) typeFilter.addEventListener("change", populateAccounts);
+
+    if (filterForm) {
+        filterForm.querySelectorAll('select, input[type="date"]').forEach((f) => {
+            f.addEventListener("change", () => {
+                if (skipAutoSubmit) return;
+                if (typeof filterForm.requestSubmit === "function") {
+                    filterForm.requestSubmit();
+                } else {
+                    filterForm.submit();
+                }
+            });
+        });
+    }
+</script>
 
 {% endblock %}

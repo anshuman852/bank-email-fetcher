@@ -7,6 +7,43 @@
     <span class="result-count">{{ rules|length }} rule{{ "s" if rules|length != 1 }}</span>
 </div>
 
+<form method="get" class="filter-bar" id="rules-filter-form">
+    <label data-field>
+        Bank
+        <select name="bank">
+            <option value="">All Banks</option>
+            {% for b in banks %}
+            <option value="{{ b }}" {% if filters.bank == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label data-field>
+        Source
+        <select name="source_id">
+            <option value="">All Sources</option>
+            {% for s in sources %}
+            <option value="{{ s.id }}" {% if filters.source_id == (s.id|string) %}selected{% endif %}>{{ s.label }} ({{ s.provider }})</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label data-field>
+        Status
+        <select name="enabled">
+            <option value="">All</option>
+            <option value="true" {% if filters.enabled == "true" %}selected{% endif %}>Enabled</option>
+            <option value="false" {% if filters.enabled == "false" %}selected{% endif %}>Disabled</option>
+        </select>
+    </label>
+    {% if filters.bank or filters.source_id or filters.enabled %}
+    <a
+        href="/rules"
+        aria-label="Clear filters"
+        title="Clear filters"
+        style="display: inline-flex; align-items: center; justify-content: center; width: 2rem; min-width: 2rem; height: 2rem; padding: 0; border-radius: 999px; border: 1px solid #dc2626; color: #dc2626; text-decoration: none; font-size: 1rem; line-height: 1; align-self: flex-end;"
+    >&times;</a>
+    {% endif %}
+</form>
+
 <section>
     <article class="card" style="margin-bottom: 1.5rem;">
         <h3 style="margin-top: 0; font-size: 1rem;">Add Rule</h3>
@@ -100,4 +137,19 @@
 </article>
 {% endif %}
 </section>
+
+<script>
+    const rulesFilterForm = document.getElementById("rules-filter-form");
+    if (rulesFilterForm) {
+        rulesFilterForm.querySelectorAll("select").forEach((f) => {
+            f.addEventListener("change", () => {
+                if (typeof rulesFilterForm.requestSubmit === "function") {
+                    rulesFilterForm.requestSubmit();
+                } else {
+                    rulesFilterForm.submit();
+                }
+            });
+        });
+    }
+</script>
 {% endblock %}

@@ -7,6 +7,43 @@
     <span class="result-count">{{ accounts|length }} account{{ "s" if accounts|length != 1 }}</span>
 </div>
 
+<form method="get" class="filter-bar" id="accounts-filter-form">
+    <label data-field>
+        Bank
+        <select name="bank">
+            <option value="">All Banks</option>
+            {% for b in banks %}
+            <option value="{{ b }}" {% if filters.bank == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label data-field>
+        Type
+        <select name="type">
+            <option value="">All Types</option>
+            <option value="bank_account" {% if filters.type == "bank_account" %}selected{% endif %}>Bank Account</option>
+            <option value="credit_card" {% if filters.type == "credit_card" %}selected{% endif %}>Credit Card</option>
+            <option value="debit_card" {% if filters.type == "debit_card" %}selected{% endif %}>Debit Card</option>
+        </select>
+    </label>
+    <label data-field>
+        Status
+        <select name="active">
+            <option value="">All</option>
+            <option value="true" {% if filters.active == "true" %}selected{% endif %}>Active</option>
+            <option value="false" {% if filters.active == "false" %}selected{% endif %}>Inactive</option>
+        </select>
+    </label>
+    {% if filters.bank or filters.type or filters.active %}
+    <a
+        href="/accounts"
+        aria-label="Clear filters"
+        title="Clear filters"
+        style="display: inline-flex; align-items: center; justify-content: center; width: 2rem; min-width: 2rem; height: 2rem; padding: 0; border-radius: 999px; border: 1px solid #dc2626; color: #dc2626; text-decoration: none; font-size: 1rem; line-height: 1; align-self: flex-end;"
+    >&times;</a>
+    {% endif %}
+</form>
+
 <section>
     <article class="card" style="margin-bottom: 1.5rem;">
         <h3 style="margin-top: 0; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6;">Add Account</h3>
@@ -97,4 +134,19 @@
 </article>
 {% endif %}
 </section>
+
+<script>
+    const accountsFilterForm = document.getElementById("accounts-filter-form");
+    if (accountsFilterForm) {
+        accountsFilterForm.querySelectorAll("select").forEach((f) => {
+            f.addEventListener("change", () => {
+                if (typeof accountsFilterForm.requestSubmit === "function") {
+                    accountsFilterForm.requestSubmit();
+                } else {
+                    accountsFilterForm.submit();
+                }
+            });
+        });
+    }
+</script>
 {% endblock %}
