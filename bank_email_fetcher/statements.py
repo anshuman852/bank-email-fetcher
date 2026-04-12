@@ -42,7 +42,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 if TYPE_CHECKING:
     from bank_email_fetcher.db import Account
@@ -407,7 +407,12 @@ def _parse_pdf_bytes_sync(pdf_bytes: bytes, password: str | None = None):
 
 
 async def _find_or_create_account(bank: str, parsed) -> "Account":
-    """Find an existing account matching the statement's card, or create one."""
+    """Find an existing account matching the statement's card, or create one.
+
+    Uses case-insensitive bank name matching so that 'axis' (from fetch rules)
+    matches 'Axis' (from manually-created accounts). When auto-creating, the
+    bank name is stored in title case for consistency.
+    """
     from bank_email_fetcher.db import Account, Card, async_session
 
     stmt_card_last4 = last4_from_card(parsed.card_number)
@@ -419,9 +424,9 @@ async def _find_or_create_account(bank: str, parsed) -> "Account":
             (
                 await session.execute(
                     select(Account).where(
-                        Account.bank == bank,
+                        func.lower(Account.bank) == bank.lower(),
                         Account.type == "credit_card",
-                        Account.active.is_(True),
+Account.active.is_(True),
                     )
                 )
             )
@@ -474,11 +479,13 @@ async def _find_or_create_account(bank: str, parsed) -> "Account":
 
     # No match — auto-create an account
     card_display = parsed.card_number or "unknown"
+    # Normalise bank name to title case for consistency with manually-created accounts
+    bank_title = bank.title()
     # Use statement name/cardholder if available, otherwise use card number
-    label = f"{bank.upper()} CC ({stmt_card_last4 or card_display})"
+    label = f"{bank_title} CC ({stmt_card_last4 or card_display})"
     async with async_session() as session:
         new_account = Account(
-            bank=bank,
+            bank=bank_title,
             label=label,
             type="credit_card",
             account_number=stmt_card_last4 or card_display,
@@ -570,6 +577,8 @@ async def process_statement_email(
             return None
 
         # PDF is encrypted — try stored passwords from credit card accounts
+        # Use case-insensitive bank name matching so 'axis' (fetch rule)
+        # matches 'Axis' (account)
         from bank_email_fetcher.config import get_fernet
 
         fernet = get_fernet()
@@ -578,7 +587,7 @@ async def process_statement_email(
                 (
                     await session.execute(
                         select(Account).where(
-                            Account.bank == bank,
+                            func.lower(Account.bank) == bank.lower(),
                             Account.type == "credit_card",
                             Account.active.is_(True),
                         )
@@ -618,29 +627,47 @@ async def process_statement_email(
             file_path.write_bytes(pdf_bytes)
 
             account = cc_accounts[0] if cc_accounts else None
-            if account:
+            if not account:
+                # If no credit_card account exists for this bank yet, auto-create
+                # a placeholder so the password_required upload can be saved.
+                bank_title = bank.title()
                 async with async_session() as session:
-                    upload = StatementUpload(
-                        account_id=account.id,
-                        bank=bank,
-                        filename=safe_name,
-                        file_path=str(file_path),
-                        status="password_required",
-                        error="PDF is encrypted — provide password via Statements page",
+                    account = Account(
+                        bank=bank_title,
+                        label=f"{bank_title} CC",
+                        type="credit_card",
+                        active=True,
                     )
-                    session.add(upload)
+                    session.add(account)
                     await session.commit()
+                    await session.refresh(account)
                     logger.info(
-                        "Encrypted CC statement saved for manual password entry: %s",
-                        safe_name,
+                        "Auto-created placeholder account %s (id=%s) for encrypted statement",
+                        account.label,
+                        account.id,
                     )
-                    return {
-                        "statement_upload_id": upload.id,
-                        "matched": 0,
-                        "missing": 0,
-                        "imported": 0,
-                    }
-            return None
+
+            async with async_session() as session:
+                upload = StatementUpload(
+                    account_id=account.id,
+                    bank=bank,
+                    filename=safe_name,
+                    file_path=str(file_path),
+                    status="password_required",
+                    error="PDF is encrypted — provide password via Statements page",
+                )
+                session.add(upload)
+                await session.commit()
+                logger.info(
+                    "Encrypted CC statement saved for manual password entry: %s",
+                    safe_name,
+                )
+                return {
+                    "statement_upload_id": upload.id,
+                    "matched": 0,
+                    "missing": 0,
+                    "imported": 0,
+                }
     except Exception as e:
         logger.warning("Failed to parse statement PDF from email: %s", e)
         return None

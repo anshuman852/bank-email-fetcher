@@ -255,8 +255,11 @@ class Transaction(Base):
     __table_args__ = (
         Index("ix_transactions_transaction_date", "transaction_date"),
         Index("ix_transactions_bank", "bank"),
-        # Reference numbers (UTR, UPI ref, etc.) are unique within the banking system
-        # SQLite treats NULLs as distinct, so this only applies when reference_number is set
+        # Reference numbers (UTR, UPI ref, etc.) are unique per-transaction within the
+        # banking system. NACH/UMRN references are NOT unique per-transaction (one mandate
+        # can produce multiple debits), so they are nullified before insertion and stored
+        # only in raw_description. SQLite treats NULLs as distinct, so this partial index
+        # only applies when reference_number is set.
         Index(
             "uq_transactions_ref",
             "bank",
@@ -354,7 +357,7 @@ async def init_db() -> None:
             )
         )
 
-        # bank_statement_upload_id FK on transactions
+# bank_statement_upload_id FK on transactions
         try:
             await conn.execute(
                 text("SELECT bank_statement_upload_id FROM transactions LIMIT 0")
@@ -383,6 +386,17 @@ async def init_db() -> None:
             await conn.execute(
                 text("ALTER TABLE accounts ADD COLUMN statement_password_hint VARCHAR")
             )
+
+        # NACH/UMRN references are mandate-level identifiers, not per-transaction unique refs.
+        # Nullify reference_number for NACH transactions so the partial unique dedup index
+        # doesn't reject legitimate repeat debits under the same mandate.
+        await conn.execute(
+            text(
+                "UPDATE transactions SET reference_number = NULL "
+                "WHERE reference_number IS NOT NULL "
+                "AND (channel = 'nach' OR email_type LIKE '%nach%')"
+            )
+        )
 
     # Populate in-memory settings cache
     from bank_email_fetcher.settings_service import load_all_settings

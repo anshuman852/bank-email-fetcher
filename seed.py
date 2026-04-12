@@ -55,6 +55,8 @@ RULES = [
         None,
         "statement",
     ),
+    # ICICI additional (Gmail)
+    ("gmail", "icici", "credit_cards@icici.bank.in", None, None, None),
     # HDFC (Gmail)
     ("gmail", "hdfc", "alerts@hdfcbank.bank.in", None, None, None),
     # CC e-statements (PDF attachments processed by cc-parser)
@@ -102,6 +104,8 @@ RULES = [
     # Kotak (Gmail)
     ("gmail", "kotak", "BankAlerts@kotak.com", None, None, None),
     ("gmail", "kotak", "no-reply@kotak.com", None, None, None),
+    ("gmail", "kotak", "bankalerts@kotak.bank.in", None, None, None),
+    ("gmail", "kotak", "nach.alerts@kotak.bank.in", None, None, None),
     # SBI Card (Gmail)
     ("gmail", "sbi", "onlinesbicard@sbicard.com", None, None, None),
     ("gmail", "sbi", "paynet@billdesk.in", None, None, None),
@@ -115,6 +119,14 @@ RULES = [
         "gmail",
         "hsbc",
         "creditcardstatement@mail.hsbc.co.in",
+        "statement",
+        None,
+        "statement",
+    ),
+    (
+        "gmail",
+        "hsbc",
+        "campaign@mail.hsbc.co.in",
         "statement",
         None,
         "statement",
@@ -139,6 +151,11 @@ RULES = [
         None,
         None,
     ),
+    ("gmail", "uboi", "loanemail@unionbankofindia.bank", None, None, None),
+    # Bank of Maharashtra (Gmail)
+    ("gmail", "bom", "mahaalert@mahabank.co.in", None, None, None),
+    # Yes Bank (Gmail)
+    ("gmail", "yesbank", "alerts@yes.bank.in", "Transaction Alert", None, None),
 ]
 
 

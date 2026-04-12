@@ -493,10 +493,11 @@ async def transaction_detail(txn_id: int, request: FastAPIRequest):
 # Emails
 # ---------------------------------------------------------------------------
 
-
 @app.get("/emails", response_class=HTMLResponse)
 async def email_list(
     request: FastAPIRequest,
+    page: int = 1,
+    page_size: int = 200,
     bank: Annotated[str | None, Query(description="Filter by bank (via rule)")] = None,
     provider: Annotated[
         str | None, Query(description="Filter by email provider")
@@ -541,7 +542,16 @@ async def email_list(
         if q:
             like = f"%{q}%"
             stmt = stmt.where(or_(Email.sender.ilike(like), Email.subject.ilike(like)))
-        stmt = stmt.order_by(Email.id.desc()).limit(200)
+
+        # Pagination
+        total_count = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
+        failed_count = (await session.execute(select(func.count(Email.id)).where(Email.status == "error"))).scalar() or 0
+        total_pages = max(1, (total_count + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * page_size
+        page_window = sorted(set([1] + list(range(max(1, page - 2), min(total_pages, page + 2) + 1)) + [total_pages]))
+
+        stmt = stmt.order_by(Email.id.desc()).offset(offset).limit(page_size)
         emails = (await session.execute(stmt)).scalars().all()
 
         # Distinct values for filter dropdowns
@@ -568,6 +578,12 @@ async def email_list(
             "banks": banks,
             "providers": providers,
             "filters": filters,
+            "page": page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "page_window": page_window,
+            "failed_count": failed_count,
         },
     )
 
@@ -1450,6 +1466,90 @@ async def reparse_email(email_id: int):
     return JSONResponse(
         {"ok": True, "message": msg, "new_status": "parsed", "txn_id": txn_id}
     )
+
+
+@app.post("/emails/reparse-all-failed")
+async def reparse_all_failed():
+    """Re-parse all emails with status='error' from the failed spool."""
+    import re as _re
+
+    SPOOL_DIR = Path(__file__).parent / "data" / "failed"
+    succeeded = 0
+    still_failed = 0
+
+    async with async_session() as session:
+        failed_emails = (
+            await session.execute(select(Email).where(Email.status == "error"))
+        ).scalars().all()
+
+    for email_row in failed_emails:
+        rule = None
+        if email_row.rule_id:
+            async with async_session() as session:
+                rule = await session.get(FetchRule, email_row.rule_id)
+
+        if not rule:
+            still_failed += 1
+            continue
+
+        safe_id = _re.sub(r"[^\w\-.]", "_", email_row.message_id)
+        spool_path = SPOOL_DIR / f"{email_row.provider}_{safe_id}.eml"
+        if not spool_path.exists():
+            still_failed += 1
+            continue
+
+        raw_bytes = spool_path.read_bytes()
+        error, txn_data = _process_email(rule.bank, raw_bytes)
+
+        stmt_result = None
+        if error and not txn_data:
+            try:
+                from bank_email_fetcher.statements import process_statement_email
+                stmt_result = await process_statement_email(
+                    rule.bank, raw_bytes, email_row.subject or "", source_id=email_row.source_id,
+                )
+            except Exception:
+                pass
+
+        if not txn_data and not stmt_result:
+            still_failed += 1
+            continue
+
+        from sqlalchemy.exc import IntegrityError as _IntegrityError
+
+        async with async_session() as session:
+            async with session.begin():
+                em = await session.get(Email, email_row.id)
+                if not em:
+                    continue
+                em.status = "parsed"
+                em.error = None
+
+                if stmt_result and stmt_result.get("statement_upload_id"):
+                    from bank_email_fetcher.db import StatementUpload
+                    su = await session.get(StatementUpload, stmt_result["statement_upload_id"])
+                    if su:
+                        su.email_id = em.id
+
+                if txn_data:
+                    try:
+                        async with session.begin_nested():
+                            from bank_email_fetcher.linker import build_link_context, link_transaction as _link_txn
+                            txn_row = Transaction(email_id=em.id, **txn_data)
+                            session.add(txn_row)
+                            await session.flush()
+                            _link_ctx = await build_link_context(session)
+                            _link_txn(_link_ctx, txn_row)
+                            await session.flush()
+                    except _IntegrityError:
+                        em.status = "skipped"
+                        em.error = "Duplicate transaction skipped"
+                        still_failed += 1
+                        continue
+
+        succeeded += 1
+
+    return JSONResponse({"ok": True, "succeeded": succeeded, "failed": still_failed})
 
 
 @app.get("/settings", response_class=HTMLResponse)
