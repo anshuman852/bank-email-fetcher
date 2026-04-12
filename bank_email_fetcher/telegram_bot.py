@@ -138,21 +138,10 @@ async def send_transaction_notification(
 
         text = "\n".join(lines)
 
-        # Add inline keyboard for quick actions
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "\U0001f4dd Add Note", callback_data=f"note:{txn_id}"
-                )
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
         await app.bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode="HTML",
-            reply_markup=reply_markup,
         )
     except Exception as e:
         logger.warning(

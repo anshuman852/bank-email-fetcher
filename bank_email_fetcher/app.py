@@ -497,7 +497,7 @@ async def transaction_detail(txn_id: int, request: FastAPIRequest):
 async def email_list(
     request: FastAPIRequest,
     page: int = 1,
-    page_size: int = 200,
+    page_size: int = 50,
     bank: Annotated[str | None, Query(description="Filter by bank (via rule)")] = None,
     provider: Annotated[
         str | None, Query(description="Filter by email provider")
