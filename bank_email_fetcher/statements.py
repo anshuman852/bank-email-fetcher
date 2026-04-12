@@ -784,6 +784,9 @@ async def process_statement_email(
                         "transaction_date": txn.transaction_date,
                         "transaction_time": txn.transaction_time,
                         "card_mask": txn.card_mask,
+                        "account_id": txn.account_id,
+                        "card_id": txn.card_id,
+                        "channel": txn.channel,
                     },
                 )
             )

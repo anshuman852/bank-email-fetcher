@@ -1437,6 +1437,9 @@ async def poll_all() -> dict:
                                                         "transaction_date": txn_row.transaction_date,
                                                         "transaction_time": txn_row.transaction_time,
                                                         "card_mask": txn_row.card_mask,
+                                                        "account_id": txn_row.account_id,
+                                                        "card_id": txn_row.card_id,
+                                                        "channel": txn_row.channel,
                                                     },
                                                 )
                                             )

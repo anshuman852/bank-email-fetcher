@@ -1435,6 +1435,10 @@ async def reparse_email(email_id: int):
                         _link_txn(_link_ctx, txn_row)
                         await session.flush()
                         txn_id = txn_row.id
+                        # Enrich txn_data with account/card info for notification
+                        txn_data["account_id"] = txn_row.account_id
+                        txn_data["card_id"] = txn_row.card_id
+                        txn_data["channel"] = txn_row.channel
                 except _IntegrityError:
                     em.status = "skipped"
                     em.error = "Duplicate transaction skipped because an identical transaction row already exists"
