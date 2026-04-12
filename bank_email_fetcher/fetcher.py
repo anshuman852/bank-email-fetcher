@@ -345,17 +345,23 @@ def _fetch_gmail_source_sync(
                     continue
                 current_folder = folder
 
-            # Skip SINCE filter for rules that haven't completed their initial
-            # backfill -- they need a full historical scan to pick up old emails.
+            # For rules that haven't completed their initial backfill, cap the
+            # historical scan at 3 months rather than a full-history search.
             needs_backfill = getattr(rule, "initial_backfill_done_at", None) is None
-            rule_since_str = None if needs_backfill else since_str
             if needs_backfill:
+                backfill_since = datetime.datetime.now(
+                    datetime.timezone.utc
+                ) - datetime.timedelta(days=90)
+                rule_since_str = backfill_since.strftime("%d-%b-%Y")
                 logger.info(
-                    "Rule %s (bank=%s, sender=%s) needs initial backfill — skipping SINCE filter",
+                    "Rule %s (bank=%s, sender=%s) initial backfill — SINCE %s",
                     rule.id,
                     rule.bank,
                     rule.sender,
+                    rule_since_str,
                 )
+            else:
+                rule_since_str = since_str
 
             criteria_parts = []
             if rule.sender:
@@ -717,14 +723,21 @@ def _fetch_fastmail_source_sync(
                 jmap_filter["from"] = rule.sender
             if rule.subject:
                 jmap_filter["subject"] = rule.subject
-            # Skip date filter for rules that haven't completed initial backfill
+            # For rules that haven't completed initial backfill, cap the
+            # historical scan at 3 months rather than a full-history search.
             needs_backfill = getattr(rule, "initial_backfill_done_at", None) is None
             if needs_backfill:
+                backfill_after = (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    - datetime.timedelta(days=90)
+                ).strftime("%Y-%m-%dT00:00:00Z")
+                jmap_filter["after"] = backfill_after
                 logger.info(
-                    "Rule %s (bank=%s, sender=%s) needs initial backfill — skipping date filter",
+                    "Rule %s (bank=%s, sender=%s) initial backfill — after %s",
                     rule.id,
                     rule.bank,
                     rule.sender,
+                    backfill_after,
                 )
             elif after_date:
                 jmap_filter["after"] = after_date

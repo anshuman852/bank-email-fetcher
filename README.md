@@ -46,8 +46,8 @@ Once running:
 - **Gmail (IMAP)**: Connects via `imap.gmail.com` using an app password. Uses a two-phase fetch: Phase 0 searches by sender/subject/date criteria to collect UIDs, Phase 1 fetches lightweight headers and X-GM-MSGID for deduplication, Phase 2 fetches full RFC822 bodies only for new messages. Deduplicates across folders using X-GM-MSGID.
 - **Fastmail (JMAP)**: Uses the Fastmail JMAP API. Queries email metadata first (including blobId), checks for existing remote IDs in the DB, then downloads only new message blobs.
 - **Connection pooling**: All rules on the same email source are processed in a single provider connection (one IMAP session per Gmail source, one JMAP session per Fastmail source).
-- **SINCE filtering**: On incremental polls, IMAP/JMAP queries include a date filter based on `last_synced_at` minus a 2-day margin to handle delayed delivery. New rules without a prior sync skip the date filter and do a full historical backfill.
-- **Backfill tracking**: Each `FetchRule` has an `initial_backfill_done_at` timestamp. Rules without this value perform a full historical search on their first poll; the timestamp is set once the search phase completes successfully.
+- **SINCE filtering**: On incremental polls, IMAP/JMAP queries include a date filter based on `last_synced_at` minus a 2-day margin to handle delayed delivery. New rules without a prior sync use a 3-month SINCE window for their initial backfill.
+- **Backfill tracking**: Each `FetchRule` has an `initial_backfill_done_at` timestamp. Rules without this value perform a 3-month historical search on their first poll; the timestamp is set once the search phase completes successfully.
 
 ### Transaction Parsing
 - Emails are parsed using **bank-email-parser**, which handles 12 Indian banks (Slice, ICICI, HDFC, Axis, IndusInd, Kotak, SBI, HSBC, IDFC FIRST, Equitas, OneCard, Union Bank of India) and 28+ email formats.

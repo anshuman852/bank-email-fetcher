@@ -76,7 +76,7 @@ Use `crypto.encrypt_credentials` / `crypto.decrypt_credentials` for email creden
 The DB dedup in Phase 1.5 uses a synchronous SQLite connection (not the async engine) because it runs inside a sync function called via `asyncio.to_thread`. The `_check_remote_ids_in_db_sync_params` helper opens a separate sync engine for this.
 
 ### Backfill tracking
-`FetchRule.initial_backfill_done_at` is NULL for new rules. While NULL, the SINCE date filter is skipped and a full historical search is done. After the first successful search phase completes, the timestamp is set. This prevents new rules from missing historical emails.
+`FetchRule.initial_backfill_done_at` is NULL for new rules. While NULL, the SINCE/after date filter uses ~3 months ago (90 days) instead of `last_synced_at` — older emails are intentionally skipped. After the first successful search phase completes, the timestamp is set and subsequent polls use the normal incremental SINCE based on `last_synced_at`.
 
 ### Link context
 `linker.build_link_context(session)` loads all accounts and cards into a `LinkContext` dataclass (Python dicts — no further DB queries). `link_transaction(ctx, txn)` mutates `txn.account_id` and `txn.card_id` in place. The caller commits.
