@@ -35,12 +35,14 @@
                     Account Number
                     <input type="text" name="account_number" value="{{ account.account_number or '' }}" placeholder="Optional">
                 </label>
-                {% if account.type == "credit_card" %}
                 <label data-field style="min-width: 180px;">
                     Statement Password
                     <input type="password" name="statement_password" value="{{ statement_password_plain or '' }}" placeholder="For encrypted PDFs" autocomplete="off">
                 </label>
-                {% endif %}
+                <label data-field style="min-width: 220px; flex: 1 1 220px;">
+                    Password Hint <small class="text-muted">(shown next to password inputs)</small>
+                    <input type="text" name="statement_password_hint" value="{{ account.statement_password_hint or '' }}" placeholder="e.g. DOB in DDMMYYYY format" autocomplete="off">
+                </label>
             </div>
             <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
                 <button type="submit">Save</button>

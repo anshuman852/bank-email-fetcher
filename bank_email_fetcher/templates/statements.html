@@ -38,7 +38,7 @@
     .file-picker {
         display: inline-flex; align-items: center; gap: 0.5rem;
         border: 1px solid var(--border-light); border-radius: 6px;
-        padding: 0 0.6rem; background: var(--surface-muted);
+        padding: 0 0.6rem; background: transparent;
         cursor: pointer; height: 38px; overflow: hidden;
         position: relative; font-size: 0.82rem; min-width: 240px;
     }
@@ -102,9 +102,10 @@
                 <input type="file" name="file" accept=".pdf" required>
             </div>
         </label>
-        <label data-field style="width: 160px;">
+        <label data-field style="width: 180px;">
             Password <small class="text-muted">(if encrypted)</small>
-            <input type="password" name="password" placeholder="Optional">
+            <input type="password" name="password" placeholder="Optional" data-password-input>
+            <small class="text-sm text-muted password-hint" data-password-hint style="display: none; margin-top: 0.25rem;"></small>
         </label>
         <button type="submit">Upload &amp; Reconcile</button>
     </form>
@@ -247,18 +248,18 @@
                         {% if u.payment_status == "paid" %}
                         <form method="post" action="/statements/{{ u.id }}/payment" onclick="event.stopPropagation();" style="display: inline;">
                             <input type="hidden" name="action" value="mark_unpaid">
-                            <button type="submit" class="text-sm">Mark Unpaid</button>
+                            <button type="submit" class="btn-link text-sm">Mark Unpaid</button>
                         </form>
                         {% else %}
                         <form method="post" action="/statements/{{ u.id }}/payment" onclick="event.stopPropagation();" style="display: inline;">
                             <input type="hidden" name="action" value="mark_paid">
-                            <button type="submit" class="text-sm">Mark Paid</button>
+                            <button type="submit" class="btn-link text-sm">Mark Paid</button>
                         </form>
                         {% endif %}
                         &middot;
                         {% endif %}
                         <form method="post" action="{{ delete_url }}" onclick="event.stopPropagation();" onsubmit="return confirm('Delete this statement upload?');" style="display: inline;">
-                            <button type="submit" class="text-sm" style="color: #dc2626;">Delete</button>
+                            <button type="submit" class="btn-link text-sm danger">Delete</button>
                         </form>
                     </td>
                 </tr>
@@ -305,6 +306,27 @@
                 picker.classList.remove("has-file");
             }
         });
+    });
+
+    // ---- Password hint: show selected account's hint under the password input ----
+    const accountHints = {{ account_hints_json|safe }};
+    [ccForm, bankForm].forEach((form) => {
+        if (!form) return;
+        const acctSelect = form.querySelector('select[name="account_id"]');
+        const hintEl = form.querySelector("[data-password-hint]");
+        if (!acctSelect || !hintEl) return;
+        const updateHint = () => {
+            const hint = accountHints[acctSelect.value];
+            if (hint) {
+                hintEl.textContent = "Hint: " + hint;
+                hintEl.style.display = "";
+            } else {
+                hintEl.textContent = "";
+                hintEl.style.display = "none";
+            }
+        };
+        acctSelect.addEventListener("change", updateHint);
+        updateHint();
     });
 
     // ---- Filter bar: cascading account dropdown + auto-submit ----

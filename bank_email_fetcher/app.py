@@ -798,6 +798,7 @@ async def account_update(
     type: str = Form(...),
     account_number: str = Form(""),
     statement_password: str = Form(""),
+    statement_password_hint: str = Form(""),
 ):
     async with async_session() as session:
         account = await session.get(Account, account_id)
@@ -808,6 +809,7 @@ async def account_update(
         account.label = label.strip()
         account.type = type
         account.account_number = account_number.strip() or None
+        account.statement_password_hint = statement_password_hint.strip() or None
 
         # Encrypt and store statement password
         if statement_password.strip():
@@ -1665,6 +1667,12 @@ async def statements_list(
             }
         )
 
+    # Map account id -> password hint, for inline display in the upload form
+    account_hints = {
+        a.id: a.statement_password_hint or ""
+        for a in [*cc_accounts, *bank_accounts]
+    }
+
     filters = {
         "type": type,
         "bank": bank,
@@ -1684,6 +1692,7 @@ async def statements_list(
             "bank_accounts": bank_accounts,
             "banks": banks,
             "accounts_json": json.dumps(accounts_by_bank),
+            "account_hints_json": json.dumps(account_hints),
             "filters": filters,
         },
     )
