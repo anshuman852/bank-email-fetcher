@@ -4,7 +4,17 @@
 
 <div class="section-header">
     <h2>Email Processing Log</h2>
-    <span class="result-count">{{ emails|length }} email{{ "s" if emails|length != 1 }}</span>
+    <div style="display: flex; align-items: center; gap: 1rem;">
+        {% if failed_count > 0 %}
+        <button
+            id="reparse-all-btn"
+            class="small"
+            data-variant="secondary"
+            onclick="reparseAllFailed(this)"
+        >Reparse All Failed ({{ failed_count }})</button>
+        {% endif %}
+        <span class="result-count">{{ "{:,}".format(total_count) }} email{{ "s" if total_count != 1 }}</span>
+    </div>
 </div>
 
 <form method="get" class="filter-bar" id="emails-filter-form">
@@ -114,6 +124,33 @@
         </table>
     </div>
 </figure>
+
+{% if total_pages > 1 %}
+<nav style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; font-size: 0.85rem;">
+    <span class="text-muted">
+        Showing {{ "{:,}".format((page - 1) * page_size + 1) }}&ndash;{{ "{:,}".format([page * page_size, total_count]|min) }} of {{ "{:,}".format(total_count) }}
+    </span>
+    <span style="display: flex; gap: 0.25rem; align-items: center;">
+        {% if page > 1 %}
+        <a href="/emails?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page - 1 }}">&laquo; Prev</a>
+        {% endif %}
+        {% set ns = namespace(prev=0) %}
+        {% for p in page_window %}
+            {% if p - ns.prev > 1 %}<span class="text-muted">&hellip;</span>{% endif %}
+            {% if p == page %}
+            <strong style="padding: 0.15rem 0.45rem; background: var(--bg-muted, #eee); border-radius: 4px;">{{ p }}</strong>
+            {% else %}
+            <a href="/emails?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ p }}" style="padding: 0.15rem 0.45rem;">{{ p }}</a>
+            {% endif %}
+            {% set ns.prev = p %}
+        {% endfor %}
+        {% if page < total_pages %}
+        <a href="/emails?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page + 1 }}">Next &raquo;</a>
+        {% endif %}
+    </span>
+</nav>
+{% endif %}
+
 {% else %}
 <article class="card empty-state">
     <p>No emails fetched yet.</p>
@@ -164,6 +201,31 @@ async function reparseEmail(btn, emailId) {
     } catch (e) {
         btn.disabled = false;
         btn.textContent = 'Reparse';
+        alert('Request failed: ' + e);
+    }
+}
+
+async function reparseAllFailed(btn) {
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = 'Reparsing all…';
+    try {
+        const resp = await fetch('/emails/reparse-all-failed', { method: 'POST' });
+        const data = await resp.json();
+        if (data.ok) {
+            const skippedPart = data.skipped ? `, ${data.skipped} skipped (duplicates)` : '';
+            btn.textContent = `Done: ${data.succeeded} succeeded${skippedPart}, ${data.failed} still failed`;
+            btn.style.opacity = '0.6';
+            // Reload after a short delay so the user can see the result
+            setTimeout(() => window.location.reload(), 1500);
+        } else {
+            btn.disabled = false;
+            btn.textContent = origText;
+            alert('Bulk reparse failed: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = origText;
         alert('Request failed: ' + e);
     }
 }

@@ -60,6 +60,23 @@ async def shutdown_telegram():
         logger.info("Telegram bot stopped")
 
 
+def build_account_label(account, card) -> str:
+    """Render the "Account: …" label used in Telegram notifications.
+
+    Pure function — callers pass already-loaded Account / Card ORM rows (both
+    relationships are ``lazy="joined"``) so the notification path doesn't open
+    a DB session per send.
+    """
+    if card:
+        card_label = card.label or card.card_mask
+        if account:
+            return f"{account.label} - {card_label}"
+        return card_label
+    if account:
+        return account.label
+    return ""
+
+
 async def send_transaction_notification(
     txn_id: int, txn_info: dict, chat_id: int
 ) -> None:
@@ -75,10 +92,10 @@ async def send_transaction_notification(
             direction_label = "DECLINED"
         elif direction == "debit":
             direction_emoji = "\U0001f534"
-            direction_label = direction
+            direction_label = "DEBIT"
         else:
             direction_emoji = "\U0001f7e2"
-            direction_label = direction
+            direction_label = "CREDIT"
         sign = "-" if direction == "debit" else "+"
         amount = txn_info.get("amount", 0)
         amount_str = f"{amount:,.2f}"
@@ -86,27 +103,44 @@ async def send_transaction_notification(
         counterparty = html.escape(str(txn_info.get("counterparty", "") or ""))
         card_mask = html.escape(str(txn_info.get("card_mask", "") or ""))
         txn_date = txn_info.get("transaction_date", "")
+        txn_time = txn_info.get("transaction_time", "")
+        channel = txn_info.get("channel", "")
+        account_label = txn_info.get("account_label", "") or ""
 
+        # Build notification text
         id_suffix = f"  #{txn_id}" if txn_id else ""
         lines = [
-            f"{direction_emoji} <b>{bank}</b> {html.escape(direction_label)}{id_suffix}",
+            f"{direction_emoji} <b>{bank}</b> {direction_label}{id_suffix}",
             f"<b>{sign}\u20b9{amount_str}</b>",
         ]
         if counterparty:
-            lines.append(counterparty)
-        txn_time = txn_info.get("transaction_time", "")
+            # Add channel badge if present
+            if channel:
+                lines.append(f"{counterparty} \u00b7 <code>{channel}</code>")
+            else:
+                lines.append(counterparty)
+
+        # Date line with account/card info
+        details_parts = []
         if txn_date:
             date_str = html.escape(str(txn_date))
             if txn_time:
                 date_str += f" {html.escape(str(txn_time)[:5])}"
-            if card_mask:
-                date_str += f" \u00b7 Card: {card_mask}"
-            lines.append(date_str)
+            details_parts.append(date_str)
+        if account_label:
+            details_parts.append(f"Account: {html.escape(account_label)}")
         elif card_mask:
-            lines.append(f"Card: {card_mask}")
+            details_parts.append(f"Card: {card_mask}")
+        if details_parts:
+            lines.append(" \u00b7 ".join(details_parts))
 
         text = "\n".join(lines)
-        await app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+        )
     except Exception as e:
         logger.warning(
             "Failed to send Telegram notification for txn #%s: %s", txn_id, e
@@ -161,6 +195,7 @@ async def _handle_callback(update: Update, context) -> None:
     query = update.callback_query
     if not query or not query.data:
         return
+
     if query.data.startswith("paid:"):
         from bank_email_fetcher.reminders import handle_mark_paid_callback
 

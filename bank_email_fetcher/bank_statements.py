@@ -659,6 +659,7 @@ async def process_bank_statement_email(
             entry["imported"] = True
             entry["imported_txn_id"] = txn.id
             imported += 1
+            from bank_email_fetcher.telegram_bot import build_account_label
             imported_txns.append(
                 (
                     txn.id,
@@ -670,6 +671,8 @@ async def process_bank_statement_email(
                         "transaction_date": txn.transaction_date,
                         "transaction_time": txn.transaction_time,
                         "card_mask": txn.card_mask,
+                        "account_label": build_account_label(txn.account, txn.card),
+                        "channel": txn.channel,
                     },
                 )
             )

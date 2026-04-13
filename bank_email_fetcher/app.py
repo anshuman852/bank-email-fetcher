@@ -493,10 +493,11 @@ async def transaction_detail(txn_id: int, request: FastAPIRequest):
 # Emails
 # ---------------------------------------------------------------------------
 
-
 @app.get("/emails", response_class=HTMLResponse)
 async def email_list(
     request: FastAPIRequest,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
     bank: Annotated[str | None, Query(description="Filter by bank (via rule)")] = None,
     provider: Annotated[
         str | None, Query(description="Filter by email provider")
@@ -541,7 +542,16 @@ async def email_list(
         if q:
             like = f"%{q}%"
             stmt = stmt.where(or_(Email.sender.ilike(like), Email.subject.ilike(like)))
-        stmt = stmt.order_by(Email.id.desc()).limit(200)
+
+        # Pagination
+        total_count = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
+        failed_count = (await session.execute(select(func.count(Email.id)).where(Email.status == "failed"))).scalar() or 0
+        total_pages = max(1, (total_count + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * page_size
+        page_window = sorted(set([1] + list(range(max(1, page - 2), min(total_pages, page + 2) + 1)) + [total_pages]))
+
+        stmt = stmt.order_by(Email.id.desc()).offset(offset).limit(page_size)
         emails = (await session.execute(stmt)).scalars().all()
 
         # Distinct values for filter dropdowns
@@ -558,6 +568,10 @@ async def email_list(
         "date_to": date_to,
         "q": q,
     }
+    qs_items = {k: v for k, v in filters.items() if v}
+    if page_size != 50:
+        qs_items["page_size"] = page_size
+    base_qs = urlencode(qs_items)
 
     return templates.TemplateResponse(
         request,
@@ -568,6 +582,13 @@ async def email_list(
             "banks": banks,
             "providers": providers,
             "filters": filters,
+            "page": page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "page_window": page_window,
+            "failed_count": failed_count,
+            "base_qs": base_qs,
         },
     )
 
@@ -708,12 +729,16 @@ async def account_list(
         stmt = stmt.order_by(Account.id)
         accounts = (await session.execute(stmt)).scalars().all()
 
-        # Distinct banks across accounts + transactions (union) for filter + add form
+        # Distinct banks across accounts + transactions (union) for filter + add form.
+        # Fall back to SUPPORTED_BANKS so the Add Account form is usable on a fresh
+        # install where no accounts/transactions exist yet.
         acct_banks = await session.execute(select(Account.bank).distinct())
         txn_banks = await session.execute(select(Transaction.bank).distinct())
         all_banks = {row[0] for row in acct_banks.all() if row[0]} | {
             row[0] for row in txn_banks.all() if row[0]
         }
+        if not all_banks:
+            all_banks = {b.upper() for b in SUPPORTED_BANKS}
         banks = sorted(all_banks)
 
     filters = {"bank": bank, "type": type, "active": active}
@@ -762,8 +787,16 @@ async def account_edit_form(request: FastAPIRequest, account_id: int):
         if not account:
             return RedirectResponse(url="/accounts", status_code=303)
 
-        bank_result = await session.execute(select(Transaction.bank).distinct())
-        banks = sorted([row[0] for row in bank_result.all() if row[0]])
+        acct_bank_result = await session.execute(select(Account.bank).distinct())
+        txn_bank_result = await session.execute(select(Transaction.bank).distinct())
+        bank_set = {row[0] for row in acct_bank_result.all() if row[0]} | {
+            row[0] for row in txn_bank_result.all() if row[0]
+        }
+        # Always include the current account's bank so the <select> has a match,
+        # even if an older row used a casing/spelling not in the distinct set.
+        if account.bank:
+            bank_set.add(account.bank)
+        banks = sorted(bank_set)
 
     # Decrypt statement password for display
     statement_password_plain = ""
@@ -1419,6 +1452,14 @@ async def reparse_email(email_id: int):
                         _link_txn(_link_ctx, txn_row)
                         await session.flush()
                         txn_id = txn_row.id
+                        # Enrich txn_data with pre-rendered label for notification
+                        from bank_email_fetcher.telegram_bot import (
+                            build_account_label,
+                        )
+                        txn_data["account_label"] = build_account_label(
+                            txn_row.account, txn_row.card
+                        )
+                        txn_data["channel"] = txn_row.channel
                 except _IntegrityError:
                     em.status = "skipped"
                     em.error = "Duplicate transaction skipped because an identical transaction row already exists"
@@ -1449,6 +1490,107 @@ async def reparse_email(email_id: int):
     logger.info("Reparse of email %d succeeded: %s", email_id, msg)
     return JSONResponse(
         {"ok": True, "message": msg, "new_status": "parsed", "txn_id": txn_id}
+    )
+
+
+@app.post("/emails/reparse-all-failed")
+async def reparse_all_failed():
+    """Re-parse all emails with status='failed' from the failed spool."""
+    import re as _re
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+    from bank_email_fetcher.statements import process_statement_email
+    from bank_email_fetcher.db import StatementUpload
+    from bank_email_fetcher.linker import (
+        build_link_context,
+        link_transaction as _link_txn,
+    )
+
+    SPOOL_DIR = Path(__file__).parent / "data" / "failed"
+    succeeded = 0
+    skipped = 0
+    still_failed = 0
+
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(Email, FetchRule)
+                .outerjoin(FetchRule, Email.rule_id == FetchRule.id)
+                .where(Email.status == "failed")
+            )
+        ).all()
+
+    for email_row, rule in rows:
+        if not rule:
+            still_failed += 1
+            continue
+
+        safe_id = _re.sub(r"[^\w\-.]", "_", email_row.message_id)
+        spool_path = SPOOL_DIR / f"{email_row.provider}_{safe_id}.eml"
+        if not spool_path.exists():
+            still_failed += 1
+            continue
+
+        raw_bytes = spool_path.read_bytes()
+        error, txn_data, _ = _process_email(rule.bank, raw_bytes)
+
+        stmt_result = None
+        if error and not txn_data:
+            try:
+                stmt_result = await process_statement_email(
+                    rule.bank,
+                    raw_bytes,
+                    email_row.subject or "",
+                    source_id=email_row.source_id,
+                )
+            except Exception:
+                pass
+
+        if not txn_data and not stmt_result:
+            still_failed += 1
+            continue
+
+        was_skipped = False
+        async with async_session() as session:
+            async with session.begin():
+                em = await session.get(Email, email_row.id)
+                if not em:
+                    continue
+                em.status = "parsed"
+                em.error = None
+
+                if stmt_result and stmt_result.get("statement_upload_id"):
+                    su = await session.get(
+                        StatementUpload, stmt_result["statement_upload_id"]
+                    )
+                    if su:
+                        su.email_id = em.id
+
+                if txn_data:
+                    try:
+                        async with session.begin_nested():
+                            txn_row = Transaction(email_id=em.id, **txn_data)
+                            session.add(txn_row)
+                            await session.flush()
+                            _link_ctx = await build_link_context(session)
+                            _link_txn(_link_ctx, txn_row)
+                            await session.flush()
+                    except _IntegrityError:
+                        em.status = "skipped"
+                        em.error = "Duplicate transaction skipped"
+                        was_skipped = True
+
+        if was_skipped:
+            skipped += 1
+        else:
+            succeeded += 1
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "succeeded": succeeded,
+            "skipped": skipped,
+            "failed": still_failed,
+        }
     )
 
 

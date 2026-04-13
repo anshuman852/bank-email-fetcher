@@ -16,9 +16,10 @@ Self-hosted personal finance service that fetches bank transaction alert emails 
 ```bash
 git clone https://github.com/AkhilNarang/bank-email-fetcher.git
 cd bank-email-fetcher
+mkdir -p data
 uv sync --no-dev
 uv run python seed.py   # generates .env with Fernet key + seeds fetch rules
-uv run fastapi run       # http://localhost:8000
+uv run fastapi dev      # http://localhost:8000 (with auto-reload)
 ```
 
 > **Warning:** There is currently no authentication on the web UI. Only run this on

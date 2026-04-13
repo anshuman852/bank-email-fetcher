@@ -12,12 +12,11 @@
             <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;">
                 <label data-field style="min-width: 160px;">
                     Bank
-                    <input type="text" name="bank" list="bank-list" required value="{{ account.bank }}">
-                    <datalist id="bank-list">
+                    <select name="bank" required>
                         {% for b in banks %}
-                        <option value="{{ b }}">
+                        <option value="{{ b }}" {% if b == account.bank %}selected{% endif %}>{{ b }}</option>
                         {% endfor %}
-                    </datalist>
+                    </select>
                 </label>
                 <label data-field style="min-width: 140px;">
                     Label

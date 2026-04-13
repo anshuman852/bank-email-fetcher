@@ -59,6 +59,10 @@ from bank_email_fetcher.linker import build_link_context, link_transaction
 
 logger = logging.getLogger(__name__)
 
+# How far back an initial backfill reaches. Used by both Gmail (IMAP SINCE)
+# and Fastmail (JMAP after) paths.
+INITIAL_BACKFILL_DAYS = 90
+
 JMAP_SESSION_URL = "https://api.fastmail.com/jmap/session"
 FAILED_SPOOL_DIR = Path(__file__).parent / "data" / "failed"
 FAILED_SPOOL_MAX_AGE_DAYS = 7
@@ -257,7 +261,9 @@ def get_poll_status() -> dict:
 def _imap_since_date(last_synced_at: datetime.datetime | None) -> str | None:
     """Return IMAP SINCE date string with 2-day margin, or None."""
     if last_synced_at is None:
-        return None
+        # For initial backfill, use 3 months ago
+        since = datetime.datetime.utcnow() - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
+        return since.strftime("%d-%b-%Y")
     since = last_synced_at - datetime.timedelta(days=2)
     return since.strftime("%d-%b-%Y")
 
@@ -328,7 +334,9 @@ def _fetch_gmail_source_sync(
     backfill_searched_rule_ids: set[int] = set()
     conn = imaplib.IMAP4_SSL("imap.gmail.com")
     try:
+        logger.info("Gmail: Connecting to imap.gmail.com for source %s", source_id)
         conn.login(user, password)
+        logger.info("Gmail: Logged in successfully for source %s", source_id)
 
         since_str = _imap_since_date(last_synced_at)
 
@@ -351,7 +359,7 @@ def _fetch_gmail_source_sync(
             if needs_backfill:
                 backfill_since = datetime.datetime.now(
                     datetime.timezone.utc
-                ) - datetime.timedelta(days=90)
+                ) - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
                 rule_since_str = backfill_since.strftime("%d-%b-%Y")
                 logger.info(
                     "Rule %s (bank=%s, sender=%s) initial backfill — SINCE %s",
@@ -373,6 +381,14 @@ def _fetch_gmail_source_sync(
             criteria = " ".join(criteria_parts) if criteria_parts else "ALL"
 
             typ, data = conn.uid("SEARCH", None, criteria)
+            logger.info(
+                "Gmail: SEARCH for rule %s (bank=%s): criteria=%s -> result=%s count=%s",
+                rule.id,
+                rule.bank,
+                criteria,
+                typ,
+                len(data[0].split()) if typ == "OK" and data[0] else 0,
+            )
             if typ != "OK" or not data[0]:
                 # SEARCH completed OK but returned zero results — this
                 # rule genuinely has no matching emails, so its backfill
@@ -683,18 +699,24 @@ def _fetch_fastmail_source_sync(
         return results_by_rule, False, set()
 
     try:
+        logger.info("Fastmail: Starting fetch for source %s", source_id)
         session = _jmap_request(token, JMAP_SESSION_URL)
         api_url = session["apiUrl"]
         account_id = session["primaryAccounts"]["urn:ietf:params:jmap:mail"]
         download_url = session["downloadUrl"]
+        logger.info("Fastmail: Connected successfully for source %s", source_id)
 
         # Cache mailbox IDs by folder name
         mailbox_cache: dict[str, str | None] = {}
 
-        # Date filter with 2-day margin
+        # Date filter: 2-day margin for regular sync, 3 months for initial backfill
         after_date = None
         if last_synced_at is not None:
             since = last_synced_at - datetime.timedelta(days=2)
+            after_date = since.strftime("%Y-%m-%dT00:00:00Z")
+        else:
+            # For initial backfill, use 3 months ago
+            since = datetime.datetime.utcnow() - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
             after_date = since.strftime("%Y-%m-%dT00:00:00Z")
 
         # Collect all candidate remote_ids per rule before downloading blobs
@@ -729,7 +751,7 @@ def _fetch_fastmail_source_sync(
             if needs_backfill:
                 backfill_after = (
                     datetime.datetime.now(datetime.timezone.utc)
-                    - datetime.timedelta(days=90)
+                    - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
                 ).strftime("%Y-%m-%dT00:00:00Z")
                 jmap_filter["after"] = backfill_after
                 logger.info(
@@ -1096,6 +1118,12 @@ async def poll_all() -> dict:
                     "email": "0/?",
                     "detail": f"Fetching from {source_label} ({len(source_rules)} rules)",
                 }
+                logger.info(
+                    "Starting fetch for source %s (%s) with %d rules",
+                    source_id,
+                    source_label,
+                    len(source_rules),
+                )
 
                 for rule in source_rules:
                     logger.info(
@@ -1113,6 +1141,11 @@ async def poll_all() -> dict:
 
                 fetch_ok = False
                 backfill_ready_rule_ids: set[int] = set()
+                logger.info(
+                    "Gmail: Starting fetch for source %s (%d rules)",
+                    source_id,
+                    len(source_rules),
+                )
                 if provider == "gmail":
                     (
                         results_by_rule,
@@ -1145,6 +1178,12 @@ async def poll_all() -> dict:
                         "Unknown provider %s for source %s", provider, source_id
                     )
                     continue
+
+                logger.info(
+                    "Gmail/Fastmail fetch completed for source %s, fetched %d total emails",
+                    source_id,
+                    sum(len(v) for v in results_by_rule.values()),
+                )
 
                 # Process results per rule
                 for rule in source_rules:
@@ -1390,6 +1429,9 @@ async def poll_all() -> dict:
                                         link_transaction(_link_ctx, txn_row)
                                         await session.flush()
                                         if should_notify:
+                                            from bank_email_fetcher.telegram_bot import (
+                                                build_account_label,
+                                            )
                                             pending_notifications.append(
                                                 (
                                                     txn_row.id,
@@ -1401,6 +1443,10 @@ async def poll_all() -> dict:
                                                         "transaction_date": txn_row.transaction_date,
                                                         "transaction_time": txn_row.transaction_time,
                                                         "card_mask": txn_row.card_mask,
+                                                        "account_label": build_account_label(
+                                                            txn_row.account, txn_row.card
+                                                        ),
+                                                        "channel": txn_row.channel,
                                                     },
                                                 )
                                             )

@@ -255,8 +255,11 @@ class Transaction(Base):
     __table_args__ = (
         Index("ix_transactions_transaction_date", "transaction_date"),
         Index("ix_transactions_bank", "bank"),
-        # Reference numbers (UTR, UPI ref, etc.) are unique within the banking system
-        # SQLite treats NULLs as distinct, so this only applies when reference_number is set
+        # Reference numbers (UTR, UPI ref, etc.) are unique per-transaction within the
+        # banking system. NACH/UMRN references are NOT unique per-transaction (one mandate
+        # can produce multiple debits), so they are nullified before insertion and stored
+        # only in raw_description. SQLite treats NULLs as distinct, so this partial index
+        # only applies when reference_number is set.
         Index(
             "uq_transactions_ref",
             "bank",
@@ -382,6 +385,30 @@ async def init_db() -> None:
         except Exception:
             await conn.execute(
                 text("ALTER TABLE accounts ADD COLUMN statement_password_hint VARCHAR")
+            )
+
+        # NACH/UMRN references are mandate-level identifiers, not per-transaction unique refs.
+        # Nullify reference_number for NACH transactions so the partial unique dedup index
+        # doesn't reject legitimate repeat debits under the same mandate. Gated behind a
+        # one-shot marker so we don't scan the transactions table on every boot.
+        nach_marker = (
+            await conn.execute(
+                text("SELECT 1 FROM settings WHERE key = 'migrations.nach_ref_nullified'")
+            )
+        ).first()
+        if not nach_marker:
+            await conn.execute(
+                text(
+                    "UPDATE transactions SET reference_number = NULL "
+                    "WHERE reference_number IS NOT NULL "
+                    "AND (channel = 'nach' OR email_type LIKE '%nach%')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO settings (key, value) VALUES "
+                    "('migrations.nach_ref_nullified', '1')"
+                )
             )
 
     # Populate in-memory settings cache
