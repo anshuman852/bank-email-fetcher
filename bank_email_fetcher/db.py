@@ -357,7 +357,7 @@ async def init_db() -> None:
             )
         )
 
-# bank_statement_upload_id FK on transactions
+        # bank_statement_upload_id FK on transactions
         try:
             await conn.execute(
                 text("SELECT bank_statement_upload_id FROM transactions LIMIT 0")
@@ -389,14 +389,27 @@ async def init_db() -> None:
 
         # NACH/UMRN references are mandate-level identifiers, not per-transaction unique refs.
         # Nullify reference_number for NACH transactions so the partial unique dedup index
-        # doesn't reject legitimate repeat debits under the same mandate.
-        await conn.execute(
-            text(
-                "UPDATE transactions SET reference_number = NULL "
-                "WHERE reference_number IS NOT NULL "
-                "AND (channel = 'nach' OR email_type LIKE '%nach%')"
+        # doesn't reject legitimate repeat debits under the same mandate. Gated behind a
+        # one-shot marker so we don't scan the transactions table on every boot.
+        nach_marker = (
+            await conn.execute(
+                text("SELECT 1 FROM settings WHERE key = 'migrations.nach_ref_nullified'")
             )
-        )
+        ).first()
+        if not nach_marker:
+            await conn.execute(
+                text(
+                    "UPDATE transactions SET reference_number = NULL "
+                    "WHERE reference_number IS NOT NULL "
+                    "AND (channel = 'nach' OR email_type LIKE '%nach%')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO settings (key, value) VALUES "
+                    "('migrations.nach_ref_nullified', '1')"
+                )
+            )
 
     # Populate in-memory settings cache
     from bank_email_fetcher.settings_service import load_all_settings

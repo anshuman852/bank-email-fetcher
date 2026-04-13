@@ -59,6 +59,10 @@ from bank_email_fetcher.linker import build_link_context, link_transaction
 
 logger = logging.getLogger(__name__)
 
+# How far back an initial backfill reaches. Used by both Gmail (IMAP SINCE)
+# and Fastmail (JMAP after) paths.
+INITIAL_BACKFILL_DAYS = 90
+
 JMAP_SESSION_URL = "https://api.fastmail.com/jmap/session"
 FAILED_SPOOL_DIR = Path(__file__).parent / "data" / "failed"
 FAILED_SPOOL_MAX_AGE_DAYS = 7
@@ -258,7 +262,7 @@ def _imap_since_date(last_synced_at: datetime.datetime | None) -> str | None:
     """Return IMAP SINCE date string with 2-day margin, or None."""
     if last_synced_at is None:
         # For initial backfill, use 3 months ago
-        since = datetime.datetime.utcnow() - datetime.timedelta(days=90)
+        since = datetime.datetime.utcnow() - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
         return since.strftime("%d-%b-%Y")
     since = last_synced_at - datetime.timedelta(days=2)
     return since.strftime("%d-%b-%Y")
@@ -349,13 +353,13 @@ def _fetch_gmail_source_sync(
                     continue
                 current_folder = folder
 
-# For initial backfill, use 3 months ago; for regular sync, use 2-day margin
+            # For rules that haven't completed their initial backfill, cap the
+            # historical scan at 3 months rather than a full-history search.
             needs_backfill = getattr(rule, "initial_backfill_done_at", None) is None
             if needs_backfill:
-                # Initial backfill: get emails from last 3 months
                 backfill_since = datetime.datetime.now(
                     datetime.timezone.utc
-                ) - datetime.timedelta(days=90)
+                ) - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
                 rule_since_str = backfill_since.strftime("%d-%b-%Y")
                 logger.info(
                     "Rule %s (bank=%s, sender=%s) initial backfill — SINCE %s",
@@ -365,7 +369,6 @@ def _fetch_gmail_source_sync(
                     rule_since_str,
                 )
             else:
-                # Regular sync: use 2-day margin
                 rule_since_str = since_str
 
             criteria_parts = []
@@ -713,7 +716,7 @@ def _fetch_fastmail_source_sync(
             after_date = since.strftime("%Y-%m-%dT00:00:00Z")
         else:
             # For initial backfill, use 3 months ago
-            since = datetime.datetime.utcnow() - datetime.timedelta(days=90)
+            since = datetime.datetime.utcnow() - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
             after_date = since.strftime("%Y-%m-%dT00:00:00Z")
 
         # Collect all candidate remote_ids per rule before downloading blobs
@@ -742,13 +745,13 @@ def _fetch_fastmail_source_sync(
                 jmap_filter["from"] = rule.sender
             if rule.subject:
                 jmap_filter["subject"] = rule.subject
-# For rules that haven't completed initial backfill, cap the
+            # For rules that haven't completed initial backfill, cap the
             # historical scan at 3 months rather than a full-history search.
             needs_backfill = getattr(rule, "initial_backfill_done_at", None) is None
             if needs_backfill:
                 backfill_after = (
                     datetime.datetime.now(datetime.timezone.utc)
-                    - datetime.timedelta(days=90)
+                    - datetime.timedelta(days=INITIAL_BACKFILL_DAYS)
                 ).strftime("%Y-%m-%dT00:00:00Z")
                 jmap_filter["after"] = backfill_after
                 logger.info(
@@ -1426,6 +1429,9 @@ async def poll_all() -> dict:
                                         link_transaction(_link_ctx, txn_row)
                                         await session.flush()
                                         if should_notify:
+                                            from bank_email_fetcher.telegram_bot import (
+                                                build_account_label,
+                                            )
                                             pending_notifications.append(
                                                 (
                                                     txn_row.id,
@@ -1437,8 +1443,9 @@ async def poll_all() -> dict:
                                                         "transaction_date": txn_row.transaction_date,
                                                         "transaction_time": txn_row.transaction_time,
                                                         "card_mask": txn_row.card_mask,
-                                                        "account_id": txn_row.account_id,
-                                                        "card_id": txn_row.card_id,
+                                                        "account_label": build_account_label(
+                                                            txn_row.account, txn_row.card
+                                                        ),
                                                         "channel": txn_row.channel,
                                                     },
                                                 )

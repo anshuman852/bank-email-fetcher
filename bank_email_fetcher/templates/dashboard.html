@@ -97,7 +97,7 @@
                             {{ txn.counterparty or "&mdash;"|safe }}
                             {% if txn.channel %}<small>{{ txn.channel }}</small>{% endif %}
                         </td>
-                        <td class="text-sm text-muted">{% if txn.card %}<a href="/accounts/{{ txn.card.account_id }}/edit" onclick="event.stopPropagation();">{{ txn.account.label }} - {{ txn.card.label or txn.card.card_mask }}{% if txn.card.label and not txn.card.is_primary %} (addon){% endif %}</a>{% elif txn.account %}<a href="/accounts/{{ txn.account.id }}/edit" onclick="event.stopPropagation();">{{ txn.account.label }}</a>{% else %}{{ txn.card_mask or txn.account_mask or "&mdash;"|safe }}{% endif %}</td>
+                        <td class="text-sm text-muted">{% if txn.card %}<a href="/accounts/{{ txn.card.account_id }}/edit" onclick="event.stopPropagation();">{% if txn.account %}{{ txn.account.label }} - {% endif %}{{ txn.card.label or txn.card.card_mask }}{% if txn.card.label and not txn.card.is_primary %} (addon){% endif %}</a>{% elif txn.account %}<a href="/accounts/{{ txn.account.id }}/edit" onclick="event.stopPropagation();">{{ txn.account.label }}</a>{% else %}{{ txn.card_mask or txn.account_mask or "&mdash;"|safe }}{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>

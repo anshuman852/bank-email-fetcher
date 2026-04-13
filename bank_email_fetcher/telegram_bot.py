@@ -60,12 +60,27 @@ async def shutdown_telegram():
         logger.info("Telegram bot stopped")
 
 
+def build_account_label(account, card) -> str:
+    """Render the "Account: …" label used in Telegram notifications.
+
+    Pure function — callers pass already-loaded Account / Card ORM rows (both
+    relationships are ``lazy="joined"``) so the notification path doesn't open
+    a DB session per send.
+    """
+    if card:
+        card_label = card.label or card.card_mask
+        if account:
+            return f"{account.label} - {card_label}"
+        return card_label
+    if account:
+        return account.label
+    return ""
+
+
 async def send_transaction_notification(
     txn_id: int, txn_info: dict, chat_id: int
 ) -> None:
     """Send a transaction notification. Includes #txn_id for reply matching."""
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
     app = tg_app
     if not app:
         return
@@ -90,24 +105,7 @@ async def send_transaction_notification(
         txn_date = txn_info.get("transaction_date", "")
         txn_time = txn_info.get("transaction_time", "")
         channel = txn_info.get("channel", "")
-
-        # Build account/card label string
-        account_label = ""
-        account_id = txn_info.get("account_id")
-        card_id = txn_info.get("card_id")
-        if account_id or card_id:
-            from bank_email_fetcher.db import Account, Card, async_session
-            async with async_session() as session:
-                if card_id:
-                    card = await session.get(Card, card_id)
-                    if card:
-                        account = await session.get(Account, card.account_id)
-                        card_label = card.label or card.card_mask
-                        account_label = f"{account.label} - {card_label}"
-                elif account_id:
-                    account = await session.get(Account, account_id)
-                    if account:
-                        account_label = account.label
+        account_label = txn_info.get("account_label", "") or ""
 
         # Build notification text
         id_suffix = f"  #{txn_id}" if txn_id else ""
@@ -202,11 +200,6 @@ async def _handle_callback(update: Update, context) -> None:
         from bank_email_fetcher.reminders import handle_mark_paid_callback
 
         await handle_mark_paid_callback(update, context)
-    elif query.data.startswith("note:"):
-        # Handle "Add Note" button click — prompt user to reply with note
-        txn_id = query.data.split(":", 1)[1]
-        await query.answer("Reply to this message with your note", show_alert=True)
-        return
     else:
         await query.answer("Unknown action")
 

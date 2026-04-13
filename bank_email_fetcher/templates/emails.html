@@ -132,7 +132,7 @@
     </span>
     <span style="display: flex; gap: 0.25rem; align-items: center;">
         {% if page > 1 %}
-        <a href="/emails?page={{ page - 1 }}">&laquo; Prev</a>
+        <a href="/emails?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page - 1 }}">&laquo; Prev</a>
         {% endif %}
         {% set ns = namespace(prev=0) %}
         {% for p in page_window %}
@@ -140,12 +140,12 @@
             {% if p == page %}
             <strong style="padding: 0.15rem 0.45rem; background: var(--bg-muted, #eee); border-radius: 4px;">{{ p }}</strong>
             {% else %}
-            <a href="/emails?page={{ p }}" style="padding: 0.15rem 0.45rem;">{{ p }}</a>
+            <a href="/emails?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ p }}" style="padding: 0.15rem 0.45rem;">{{ p }}</a>
             {% endif %}
             {% set ns.prev = p %}
         {% endfor %}
         {% if page < total_pages %}
-        <a href="/emails?page={{ page + 1 }}">Next &raquo;</a>
+        <a href="/emails?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page + 1 }}">Next &raquo;</a>
         {% endif %}
     </span>
 </nav>
@@ -213,7 +213,8 @@ async function reparseAllFailed(btn) {
         const resp = await fetch('/emails/reparse-all-failed', { method: 'POST' });
         const data = await resp.json();
         if (data.ok) {
-            btn.textContent = `Done: ${data.succeeded} succeeded, ${data.failed} still failed`;
+            const skippedPart = data.skipped ? `, ${data.skipped} skipped (duplicates)` : '';
+            btn.textContent = `Done: ${data.succeeded} succeeded${skippedPart}, ${data.failed} still failed`;
             btn.style.opacity = '0.6';
             // Reload after a short delay so the user can see the result
             setTimeout(() => window.location.reload(), 1500);
