@@ -2189,9 +2189,13 @@ async def bank_statement_retry(
             parse_bank_statement, Path(file_path), upload.bank, password
         )
     except Exception as e:
+        msg = str(e)
+        is_password_error = "encrypt" in msg.lower() or "password" in msg.lower()
         async with async_session() as session:
             upload = await session.get(BankStatementUpload, upload_id)
-            upload.error = str(e)
+            upload.error = msg
+            if not is_password_error:
+                upload.status = "parse_error"
             await session.commit()
         return RedirectResponse(url=f"/statements/bank/{upload_id}", status_code=303)
 
