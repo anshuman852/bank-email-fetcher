@@ -8,10 +8,10 @@
         {% if failed_count > 0 %}
         <button
             id="reparse-all-btn"
-            class="small"
-            data-variant="secondary"
+            class="btn-action"
+            type="button"
             onclick="reparseAllFailed(this)"
-        >Reparse All Failed ({{ failed_count }})</button>
+        >Reparse all failed<span class="btn-action-count">{{ failed_count }}</span></button>
         {% endif %}
         <span class="result-count">{{ "{:,}".format(total_count) }} email{{ "s" if total_count != 1 }}</span>
     </div>
@@ -110,8 +110,8 @@
                     <td onclick="event.stopPropagation()">
                         {% if em.status == "failed" %}
                         <button
-                            class="small"
-                            data-variant="secondary"
+                            class="btn-action"
+                            type="button"
                             onclick="reparseEmail(this, {{ em.id }})"
                         >Reparse</button>
                         {% else %}
@@ -207,7 +207,7 @@ async function reparseEmail(btn, emailId) {
 
 async function reparseAllFailed(btn) {
     btn.disabled = true;
-    const origText = btn.textContent;
+    const origHTML = btn.innerHTML;
     btn.textContent = 'Reparsing all…';
     try {
         const resp = await fetch('/emails/reparse-all-failed', { method: 'POST' });
@@ -216,16 +216,15 @@ async function reparseAllFailed(btn) {
             const skippedPart = data.skipped ? `, ${data.skipped} skipped (duplicates)` : '';
             btn.textContent = `Done: ${data.succeeded} succeeded${skippedPart}, ${data.failed} still failed`;
             btn.style.opacity = '0.6';
-            // Reload after a short delay so the user can see the result
             setTimeout(() => window.location.reload(), 1500);
         } else {
             btn.disabled = false;
-            btn.textContent = origText;
+            btn.innerHTML = origHTML;
             alert('Bulk reparse failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
         btn.disabled = false;
-        btn.textContent = origText;
+        btn.innerHTML = origHTML;
         alert('Request failed: ' + e);
     }
 }
