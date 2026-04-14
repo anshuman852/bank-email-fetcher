@@ -804,6 +804,14 @@ async def process_statement_email(
             entry["imported_txn_id"] = txn.id
             imported += 1
             from bank_email_fetcher.telegram_bot import build_account_label
+            account_obj = (
+                await session.get(Account, txn.account_id)
+                if txn.account_id
+                else None
+            )
+            card_obj = (
+                await session.get(Card, txn.card_id) if txn.card_id else None
+            )
             imported_txns.append(
                 (
                     txn.id,
@@ -815,7 +823,7 @@ async def process_statement_email(
                         "transaction_date": txn.transaction_date,
                         "transaction_time": txn.transaction_time,
                         "card_mask": txn.card_mask,
-                        "account_label": build_account_label(txn.account, txn.card),
+                        "account_label": build_account_label(account_obj, card_obj),
                         "channel": txn.channel,
                     },
                 )

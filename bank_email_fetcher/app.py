@@ -1456,8 +1456,18 @@ async def reparse_email(email_id: int):
                         from bank_email_fetcher.telegram_bot import (
                             build_account_label,
                         )
+                        account_obj = (
+                            await session.get(Account, txn_row.account_id)
+                            if txn_row.account_id
+                            else None
+                        )
+                        card_obj = (
+                            await session.get(Card, txn_row.card_id)
+                            if txn_row.card_id
+                            else None
+                        )
                         txn_data["account_label"] = build_account_label(
-                            txn_row.account, txn_row.card
+                            account_obj, card_obj
                         )
                         txn_data["channel"] = txn_row.channel
                 except _IntegrityError:

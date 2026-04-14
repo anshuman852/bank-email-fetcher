@@ -49,7 +49,9 @@ from bank_email_parser.exceptions import ParseError, UnsupportedEmailTypeError
 
 from bank_email_fetcher.crypto import decrypt_credentials
 from bank_email_fetcher.db import (
+    Account,
     async_session,
+    Card,
     Email,
     EmailSource,
     FetchRule,
@@ -1432,6 +1434,16 @@ async def poll_all() -> dict:
                                             from bank_email_fetcher.telegram_bot import (
                                                 build_account_label,
                                             )
+                                            account_obj = (
+                                                await session.get(Account, txn_row.account_id)
+                                                if txn_row.account_id
+                                                else None
+                                            )
+                                            card_obj = (
+                                                await session.get(Card, txn_row.card_id)
+                                                if txn_row.card_id
+                                                else None
+                                            )
                                             pending_notifications.append(
                                                 (
                                                     txn_row.id,
@@ -1444,7 +1456,7 @@ async def poll_all() -> dict:
                                                         "transaction_time": txn_row.transaction_time,
                                                         "card_mask": txn_row.card_mask,
                                                         "account_label": build_account_label(
-                                                            txn_row.account, txn_row.card
+                                                            account_obj, card_obj
                                                         ),
                                                         "channel": txn_row.channel,
                                                     },
