@@ -24,7 +24,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import InvalidOperation
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -74,6 +74,23 @@ from bank_email_fetcher.fetcher import (
     _process_email,
 )
 from bank_email_fetcher.linker import build_link_context, link_transaction
+from bank_email_fetcher.statements import (
+    parse_statement,
+    reconcile_statement,
+    reconciliation_to_json,
+    enrich_matched_transactions,
+    parse_cc_amount,
+    parse_cc_date,
+    last4_from_card,
+    _extract_digits,
+)
+from bank_email_fetcher.bank_statements import (
+    parse_bank_statement,
+    reconcile_bank_statement,
+    _parse_amount as _parse_bank_amount,
+    _parse_date as _parse_bank_date,
+    _last4 as _bank_last4,
+)
 from bank_email_parser import SUPPORTED_BANKS
 
 logging.basicConfig(
@@ -822,6 +839,343 @@ async def account_edit_form(request: FastAPIRequest, account_id: int):
     )
 
 
+def _cc_stmt_date_range(parsed) -> tuple[date, date] | None:
+    """Return (earliest, latest) transaction_date across a parsed CC statement,
+    or None if no transactions had parseable dates. Used to narrow the account
+    transaction query during reconciliation — a statement only matches against
+    DB rows inside its own period, so loading the whole account history is
+    wasteful."""
+    dates: list[date] = []
+    for txn in (parsed.transactions or []) + (parsed.payments_refunds or []):
+        try:
+            dates.append(parse_cc_date(txn.date))
+        except (ValueError, KeyError, AttributeError):
+            continue
+    return (min(dates), max(dates)) if dates else None
+
+
+def _bank_stmt_date_range(parsed) -> tuple[date, date] | None:
+    """Same as ``_cc_stmt_date_range`` but for bank statements. Prefers the
+    statement's declared period bounds when available, falling back to the
+    observed transaction dates."""
+    if parsed.statement_period_start and parsed.statement_period_end:
+        try:
+            return (
+                _parse_bank_date(parsed.statement_period_start),
+                _parse_bank_date(parsed.statement_period_end),
+            )
+        except (ValueError, KeyError, AttributeError):
+            pass
+    dates: list[date] = []
+    for txn in parsed.transactions or []:
+        try:
+            dates.append(_parse_bank_date(txn.date))
+        except (ValueError, KeyError, AttributeError):
+            continue
+    return (min(dates), max(dates)) if dates else None
+
+
+# Buffer days added to each side of the statement date range when querying
+# candidate DB transactions. Covers ±1-day match tolerance in the reconcilers
+# plus timing drift between when a transaction was booked on our side vs when
+# it appeared on the statement (e.g. weekend-posted UPI credits, reference-
+# number matches that fall just outside the statement period).
+_STMT_RECONCILE_DATE_BUFFER_DAYS = 7
+
+
+async def _retry_cc_statement_upload(upload_id: int, password: str) -> bool:
+    """Re-parse a CC statement upload with the supplied password and run the
+    full reconcile + auto-import + payment-tracking pipeline.
+
+    Shared between the manual retry endpoint and the bulk auto-retry triggered
+    when an account's statement_password is saved. Returns True on success,
+    False if the PDF fails to parse. Parse errors are persisted to
+    ``StatementUpload.error`` so the UI can surface them.
+    """
+    async with async_session() as session:
+        if not (upload := await session.get(StatementUpload, upload_id)):
+            return False
+        account_id = upload.account_id
+        file_path = upload.file_path
+
+    try:
+        parsed = await asyncio.to_thread(parse_statement, Path(file_path), password)
+    except Exception as e:
+        async with async_session() as session:
+            if upload := await session.get(StatementUpload, upload_id):
+                upload.error = str(e)
+                await session.commit()
+        return False
+
+    # Fresh per-call transaction snapshot — auto-imports from a prior retry in
+    # the same loop must be visible so the next statement doesn't re-import them.
+    async with async_session() as session:
+        stmt = select(Transaction).where(Transaction.account_id == account_id)
+        if date_range := _cc_stmt_date_range(parsed):
+            lo, hi = date_range
+            stmt = stmt.where(
+                Transaction.transaction_date.between(
+                    lo - timedelta(days=_STMT_RECONCILE_DATE_BUFFER_DAYS),
+                    hi + timedelta(days=_STMT_RECONCILE_DATE_BUFFER_DAYS),
+                )
+            )
+        db_txns = (await session.execute(stmt)).scalars().all()
+
+        recon = reconcile_statement(parsed, db_txns, account_id)
+        await enrich_matched_transactions(recon)
+
+        upload = await session.get(StatementUpload, upload_id)
+        account = await session.get(Account, account_id)
+        upload.status = "parsed"
+        upload.bank = parsed.bank
+        upload.card_number = parsed.card_number
+        upload.statement_name = parsed.name
+        upload.due_date = parsed.due_date
+        upload.total_amount_due = parsed.statement_total_amount_due
+        upload.parsed_txn_count = len(recon["matched"]) + len(recon["missing"])
+        upload.matched_count = len(recon["matched"])
+        upload.missing_count = len(recon["missing"])
+        upload.reconciliation_data = reconciliation_to_json(recon)
+        upload.error = None
+
+        link_ctx = await build_link_context(session)
+        account_cards = (
+            (await session.execute(select(Card).where(Card.account_id == account_id)))
+            .scalars()
+            .all()
+        )
+        card_last4s = [
+            v for v in (last4_from_card(c.card_mask) for c in account_cards) if v
+        ]
+
+        def _resolve_card_mask(raw: str | None) -> str | None:
+            if l4 := last4_from_card(raw):
+                return l4
+            if partial := _extract_digits(raw):
+                for cl4 in card_last4s:
+                    if cl4.endswith(partial):
+                        return cl4
+            return last4_from_card(account.account_number) if account else None
+
+        imported = 0
+        for entry in recon["missing"]:
+            if entry.get("imported"):
+                continue
+            try:
+                amount = parse_cc_amount(entry["amount"])
+                txn_date = parse_cc_date(entry["date"])
+            except ValueError, KeyError:
+                continue
+            txn = Transaction(
+                statement_upload_id=upload_id,
+                account_id=account_id,
+                bank=parsed.bank,
+                email_type="cc_statement",
+                direction=entry["direction"],
+                amount=amount,
+                currency="INR",
+                transaction_date=txn_date,
+                counterparty=entry.get("narration"),
+                card_mask=_resolve_card_mask(entry.get("card_number")),
+                channel="cc_statement",
+                raw_description=entry.get("narration"),
+            )
+            session.add(txn)
+            await session.flush()
+            link_transaction(link_ctx, txn)
+            await session.flush()
+            entry["imported"] = True
+            entry["imported_txn_id"] = txn.id
+            imported += 1
+
+        upload.imported_count = imported
+        upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
+        upload.reconciliation_data = reconciliation_to_json(recon)
+        if upload.missing_count == 0:
+            upload.status = "imported"
+        elif imported > 0:
+            upload.status = "partial_import"
+        await session.commit()
+
+    from bank_email_fetcher.reminders import init_payment_tracking
+
+    await init_payment_tracking(upload_id)
+    return True
+
+
+async def _retry_bank_statement_upload(upload_id: int, password: str) -> bool:
+    """Re-parse a bank statement upload and run the full reconcile + auto-import
+    pipeline. Mirror of ``_retry_cc_statement_upload`` for BankStatementUpload.
+    """
+    async with async_session() as session:
+        if not (upload := await session.get(BankStatementUpload, upload_id)):
+            return False
+        account_id = upload.account_id
+        file_path = upload.file_path
+        bank = upload.bank
+
+    try:
+        parsed = await asyncio.to_thread(
+            parse_bank_statement, Path(file_path), bank, password
+        )
+    except Exception as e:
+        msg = str(e)
+        is_password_error = "encrypt" in msg.lower() or "password" in msg.lower()
+        async with async_session() as session:
+            if upload := await session.get(BankStatementUpload, upload_id):
+                upload.error = msg
+                if not is_password_error:
+                    upload.status = "parse_error"
+                await session.commit()
+        return False
+
+    async with async_session() as session:
+        stmt = select(Transaction).where(Transaction.account_id == account_id)
+        if date_range := _bank_stmt_date_range(parsed):
+            lo, hi = date_range
+            stmt = stmt.where(
+                Transaction.transaction_date.between(
+                    lo - timedelta(days=_STMT_RECONCILE_DATE_BUFFER_DAYS),
+                    hi + timedelta(days=_STMT_RECONCILE_DATE_BUFFER_DAYS),
+                )
+            )
+        db_txns = (await session.execute(stmt)).scalars().all()
+
+        recon = reconcile_bank_statement(parsed, db_txns, account_id)
+        await enrich_matched_transactions(recon)
+
+        upload = await session.get(BankStatementUpload, upload_id)
+        upload.status = "parsed"
+        upload.account_number = parsed.account_number
+        upload.account_holder_name = parsed.account_holder_name
+        upload.opening_balance = parsed.opening_balance
+        upload.closing_balance = parsed.closing_balance
+        upload.statement_period_start = parsed.statement_period_start
+        upload.statement_period_end = parsed.statement_period_end
+        upload.parsed_txn_count = len(recon["matched"]) + len(recon["missing"])
+        upload.matched_count = len(recon["matched"])
+        upload.missing_count = len(recon["missing"])
+        upload.reconciliation_data = reconciliation_to_json(recon)
+        upload.error = None
+
+        link_ctx = await build_link_context(session)
+        imported = 0
+        for entry in recon["missing"]:
+            if entry.get("imported"):
+                continue
+            try:
+                amount = _parse_bank_amount(entry["amount"])
+                txn_date = _parse_bank_date(entry["date"])
+            except ValueError, KeyError:
+                continue
+            txn = Transaction(
+                bank_statement_upload_id=upload_id,
+                account_id=account_id,
+                bank=parsed.bank,
+                email_type="bank_statement",
+                direction=entry["direction"],
+                amount=amount,
+                currency="INR",
+                transaction_date=txn_date,
+                counterparty=entry.get("narration"),
+                account_mask=_bank_last4(parsed.account_number),
+                reference_number=entry.get("reference_number"),
+                channel=entry.get("channel") or "bank_statement",
+                raw_description=entry.get("narration"),
+            )
+            session.add(txn)
+            await session.flush()
+            link_transaction(link_ctx, txn)
+            await session.flush()
+            entry["imported"] = True
+            entry["imported_txn_id"] = txn.id
+            imported += 1
+
+        upload.imported_count = imported
+        upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
+        upload.reconciliation_data = reconciliation_to_json(recon)
+        if upload.missing_count == 0:
+            upload.status = "imported"
+        elif imported > 0:
+            upload.status = "partial_import"
+        await session.commit()
+
+    return True
+
+
+async def retry_password_required_statements(account_id: int, password: str) -> dict:
+    """Retry every password_required statement upload for the account.
+
+    Returns a dict with per-kind success/failure counts. Each upload is
+    processed through the same helper as the manual retry endpoint, so
+    behaviour (auto-import of missing transactions, payment tracking, status
+    transitions) stays in sync.
+    """
+    result = {"cc_retried": 0, "bank_retried": 0, "cc_failed": 0, "bank_failed": 0}
+
+    async with async_session() as session:
+        cc_ids = (
+            (
+                await session.execute(
+                    select(StatementUpload.id).where(
+                        StatementUpload.account_id == account_id,
+                        StatementUpload.status == "password_required",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        bank_ids = (
+            (
+                await session.execute(
+                    select(BankStatementUpload.id).where(
+                        BankStatementUpload.account_id == account_id,
+                        BankStatementUpload.status == "password_required",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    for upload_id in cc_ids:
+        try:
+            ok = await _retry_cc_statement_upload(upload_id, password)
+        except Exception as e:
+            ok = False
+            logger.warning(
+                "Auto-retry raised for CC statement %d on account %d: %s",
+                upload_id,
+                account_id,
+                e,
+            )
+        result["cc_retried" if ok else "cc_failed"] += 1
+
+    for upload_id in bank_ids:
+        try:
+            ok = await _retry_bank_statement_upload(upload_id, password)
+        except Exception as e:
+            ok = False
+            logger.warning(
+                "Auto-retry raised for bank statement %d on account %d: %s",
+                upload_id,
+                account_id,
+                e,
+            )
+        result["bank_retried" if ok else "bank_failed"] += 1
+
+    logger.info(
+        "Password auto-retry on account %d: CC %d/%d, bank %d/%d",
+        account_id,
+        result["cc_retried"],
+        result["cc_retried"] + result["cc_failed"],
+        result["bank_retried"],
+        result["bank_retried"] + result["bank_failed"],
+    )
+    return result
+
+
 @app.post("/accounts/{account_id}/edit")
 async def account_update(
     request: FastAPIRequest,
@@ -859,6 +1213,24 @@ async def account_update(
 
     async with async_session() as session:
         await auto_link_transactions(session, account)
+
+    # Automatically retry password-required statements when password is provided
+    if statement_password.strip():
+        try:
+            retry_result = await retry_password_required_statements(account_id, statement_password.strip())
+            total_retried = retry_result["cc_retried"] + retry_result["bank_retried"]
+            if total_retried > 0:
+                logger.info(
+                    "Automatically retried %d password-required statements for account %d",
+                    total_retried,
+                    account_id,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to automatically retry password-required statements for account %d: %s",
+                account_id,
+                e,
+            )
 
     return RedirectResponse(url="/accounts", status_code=303)
 
@@ -2176,119 +2548,25 @@ async def bank_statement_retry(
     password: str = Form(...),
     save_password: str = Form(""),
 ):
-    from bank_email_fetcher.bank_statements import (
-        parse_bank_statement,
-        reconcile_bank_statement,
-        reconciliation_to_json,
-        enrich_matched_transactions,
-        _parse_amount,
-        _parse_date,
-        _last4,
-    )
-    from bank_email_fetcher.linker import build_link_context, link_transaction
-
     async with async_session() as session:
-        upload = await session.get(BankStatementUpload, upload_id)
-        if not upload:
+        if not (upload := await session.get(BankStatementUpload, upload_id)):
             return RedirectResponse(url="/statements", status_code=303)
         account_id = upload.account_id
-        file_path = upload.file_path
 
-    try:
-        parsed = await asyncio.to_thread(
-            parse_bank_statement, Path(file_path), upload.bank, password
-        )
-    except Exception as e:
-        msg = str(e)
-        is_password_error = "encrypt" in msg.lower() or "password" in msg.lower()
-        async with async_session() as session:
-            upload = await session.get(BankStatementUpload, upload_id)
-            upload.error = msg
-            if not is_password_error:
-                upload.status = "parse_error"
-            await session.commit()
-        return RedirectResponse(url=f"/statements/bank/{upload_id}", status_code=303)
-
-    if save_password == "1":
+    # Only persist the password to the account if the retry succeeded — a
+    # wrong password shouldn't overwrite a previously-good one. Saving the
+    # password also unlocks any other password_required statements on the
+    # same account (the coordinator skips this upload since its status is
+    # no longer password_required after the retry above).
+    if await _retry_bank_statement_upload(upload_id, password) and save_password == "1":
         from bank_email_fetcher.config import get_fernet
 
         encrypted = get_fernet().encrypt(password.encode()).decode()
         async with async_session() as session:
-            account = await session.get(Account, account_id)
-            if account:
+            if account := await session.get(Account, account_id):
                 account.statement_password = encrypted
                 await session.commit()
-
-    async with async_session() as session:
-        db_txns = (
-            (
-                await session.execute(
-                    select(Transaction).where(Transaction.account_id == account_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    recon = reconcile_bank_statement(parsed, db_txns, account_id)
-    await enrich_matched_transactions(recon)
-
-    async with async_session() as session:
-        upload = await session.get(BankStatementUpload, upload_id)
-        upload.status = "parsed"
-        upload.account_number = parsed.account_number
-        upload.account_holder_name = parsed.account_holder_name
-        upload.opening_balance = parsed.opening_balance
-        upload.closing_balance = parsed.closing_balance
-        upload.statement_period_start = parsed.statement_period_start
-        upload.statement_period_end = parsed.statement_period_end
-        upload.parsed_txn_count = len(recon["matched"]) + len(recon["missing"])
-        upload.matched_count = len(recon["matched"])
-        upload.missing_count = len(recon["missing"])
-        upload.reconciliation_data = reconciliation_to_json(recon)
-        upload.error = None
-
-        link_ctx = await build_link_context(session)
-        imported = 0
-        for entry in recon["missing"]:
-            if entry.get("imported"):
-                continue
-            try:
-                amount = _parse_amount(entry["amount"])
-                txn_date = _parse_date(entry["date"])
-            except ValueError, KeyError:
-                continue
-            txn = Transaction(
-                bank_statement_upload_id=upload_id,
-                account_id=account_id,
-                bank=parsed.bank,
-                email_type="bank_statement",
-                direction=entry["direction"],
-                amount=amount,
-                currency="INR",
-                transaction_date=txn_date,
-                counterparty=entry.get("narration"),
-                account_mask=_last4(parsed.account_number),
-                reference_number=entry.get("reference_number"),
-                channel=entry.get("channel") or "bank_statement",
-                raw_description=entry.get("narration"),
-            )
-            session.add(txn)
-            await session.flush()
-            link_transaction(link_ctx, txn)
-            await session.flush()
-            entry["imported"] = True
-            entry["imported_txn_id"] = txn.id
-            imported += 1
-
-        upload.imported_count = imported
-        upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
-        upload.reconciliation_data = reconciliation_to_json(recon)
-        if upload.missing_count == 0:
-            upload.status = "imported"
-        elif imported > 0:
-            upload.status = "partial_import"
-        await session.commit()
+        await retry_password_required_statements(account_id, password)
 
     return RedirectResponse(url=f"/statements/bank/{upload_id}", status_code=303)
 
@@ -2356,136 +2634,26 @@ async def statement_retry(
     password: str = Form(...),
     save_password: str = Form(""),
 ):
-    from bank_email_fetcher.statements import (
-        parse_statement,
-        reconcile_statement,
-        reconciliation_to_json,
-        enrich_matched_transactions,
-        parse_cc_amount,
-        parse_cc_date,
-        last4_from_card,
-        _extract_digits,
-    )
-    from bank_email_fetcher.linker import build_link_context, link_transaction
-
     async with async_session() as session:
-        upload = await session.get(StatementUpload, upload_id)
-        if not upload:
+        if not (upload := await session.get(StatementUpload, upload_id)):
             return RedirectResponse(url="/statements", status_code=303)
         account_id = upload.account_id
-        file_path = upload.file_path
 
-    try:
-        parsed = await asyncio.to_thread(parse_statement, Path(file_path), password)
-    except Exception as e:
-        async with async_session() as session:
-            upload = await session.get(StatementUpload, upload_id)
-            upload.error = str(e)
-            await session.commit()
-        return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
-
-    # Save password to account if requested
-    if save_password == "1":
+    # Only persist the password to the account if the retry succeeded — a
+    # wrong password shouldn't overwrite a previously-good one. Saving the
+    # password also unlocks any other password_required statements on the
+    # same account (the coordinator skips this upload since its status is
+    # no longer password_required after the retry above).
+    if await _retry_cc_statement_upload(upload_id, password) and save_password == "1":
         from bank_email_fetcher.config import get_fernet
 
         encrypted = get_fernet().encrypt(password.encode()).decode()
         async with async_session() as session:
-            account = await session.get(Account, account_id)
-            if account:
+            if account := await session.get(Account, account_id):
                 account.statement_password = encrypted
                 await session.commit()
                 logger.info("Saved statement password for account %s", account.label)
-
-    async with async_session() as session:
-        db_txns = (
-            (
-                await session.execute(
-                    select(Transaction).where(Transaction.account_id == account_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    recon = reconcile_statement(parsed, db_txns, account_id)
-    await enrich_matched_transactions(recon)
-
-    async with async_session() as session:
-        upload = await session.get(StatementUpload, upload_id)
-        account = await session.get(Account, account_id)
-        upload.status = "parsed"
-        upload.bank = parsed.bank
-        upload.card_number = parsed.card_number
-        upload.statement_name = parsed.name
-        upload.due_date = parsed.due_date
-        upload.total_amount_due = parsed.statement_total_amount_due
-        upload.parsed_txn_count = len(recon["matched"]) + len(recon["missing"])
-        upload.matched_count = len(recon["matched"])
-        upload.missing_count = len(recon["missing"])
-        upload.reconciliation_data = reconciliation_to_json(recon)
-        upload.error = None
-
-        # Auto-import missing transactions
-        link_ctx = await build_link_context(session)
-        acct_cards = (
-            (await session.execute(select(Card).where(Card.account_id == account_id)))
-            .scalars()
-            .all()
-        )
-        _card_l4s = [v for v in (last4_from_card(c.card_mask) for c in acct_cards) if v]
-
-        def _resolve_card_mask(raw: str | None) -> str | None:
-            l4 = last4_from_card(raw)
-            if l4:
-                return l4
-            partial = _extract_digits(raw)
-            if partial:
-                for cl4 in _card_l4s:
-                    if cl4.endswith(partial):
-                        return cl4
-            return last4_from_card(account.account_number) if account else None
-
-        imported = 0
-        for entry in recon["missing"]:
-            if entry.get("imported"):
-                continue
-            try:
-                amount = parse_cc_amount(entry["amount"])
-                txn_date = parse_cc_date(entry["date"])
-            except ValueError, KeyError:
-                continue
-            txn = Transaction(
-                statement_upload_id=upload_id,
-                account_id=account_id,
-                bank=parsed.bank,
-                email_type="cc_statement",
-                direction=entry["direction"],
-                amount=amount,
-                currency="INR",
-                transaction_date=txn_date,
-                counterparty=entry.get("narration"),
-                card_mask=_resolve_card_mask(entry.get("card_number")),
-                channel="cc_statement",
-                raw_description=entry.get("narration"),
-            )
-            session.add(txn)
-            await session.flush()
-            link_transaction(link_ctx, txn)
-            await session.flush()
-            entry["imported"] = True
-            entry["imported_txn_id"] = txn.id
-            imported += 1
-
-        upload.imported_count = imported
-        upload.missing_count = sum(1 for e in recon["missing"] if not e.get("imported"))
-        upload.reconciliation_data = reconciliation_to_json(recon)
-        if upload.missing_count == 0:
-            upload.status = "imported"
-        await session.commit()
-
-    from bank_email_fetcher.reminders import init_payment_tracking
-
-    await init_payment_tracking(upload_id)
+        await retry_password_required_statements(account_id, password)
 
     return RedirectResponse(url=f"/statements/{upload_id}", status_code=303)
 
