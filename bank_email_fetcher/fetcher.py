@@ -94,6 +94,67 @@ def _save_failed_email(provider: str, message_id: str, raw_bytes: bytes) -> None
     logger.info("Saved failed email to %s", path)
 
 
+def _spool_path_for(provider: str, message_id: str) -> Path:
+    """Location on disk where this email's .eml would be (if spooled)."""
+    safe_id = re.sub(r"[^\w\-.]", "_", message_id)
+    return FAILED_SPOOL_DIR / f"{provider}_{safe_id}.eml"
+
+
+async def load_or_fetch_raw_email(email_row) -> tuple[bytes | None, str | None]:
+    """Return the raw .eml for an ``Email`` row, preferring the local spool
+    and falling back to a live provider fetch when the spool has expired.
+
+    The failed spool is not a permanent archive — ``_cleanup_failed_spool``
+    deletes anything older than FAILED_SPOOL_MAX_AGE_DAYS — so every retry
+    path needs to tolerate a missing file. Returns ``(raw_bytes, None)`` on
+    success or ``(None, error_message)`` on failure. Does not mutate
+    ``email_row``.
+    """
+    spool_path = _spool_path_for(email_row.provider, email_row.message_id)
+    if spool_path.exists():
+        return spool_path.read_bytes(), None
+
+    if not email_row.source_id or not email_row.remote_id:
+        return (
+            None,
+            f"Spool file missing ({spool_path.name}) and no source/remote ID to re-fetch",
+        )
+
+    async with async_session() as session:
+        source = await session.get(EmailSource, email_row.source_id)
+    if not source:
+        return None, f"Email source {email_row.source_id} not found for re-fetch"
+
+    try:
+        creds = decrypt_credentials(source.credentials)
+    except Exception as e:
+        return None, f"Credential decryption failed: {e}"
+
+    if source.provider == "gmail":
+        raw = await asyncio.to_thread(
+            _fetch_gmail_single_sync,
+            creds["user"],
+            creds["app_password"],
+            email_row.remote_id,
+        )
+    elif source.provider == "fastmail":
+        raw = await asyncio.to_thread(
+            _fetch_fastmail_single_sync, creds["token"], email_row.remote_id
+        )
+    else:
+        return None, f"Unknown provider {source.provider!r}"
+
+    if not raw:
+        return None, "Provider returned no data (email may have been deleted)"
+
+    logger.info(
+        "Re-fetched email %s from %s (spool was missing)",
+        email_row.message_id,
+        source.provider,
+    )
+    return raw, None
+
+
 def _cleanup_failed_spool() -> None:
     """Delete .eml files in the failed spool older than FAILED_SPOOL_MAX_AGE_DAYS."""
     if not FAILED_SPOOL_DIR.exists():

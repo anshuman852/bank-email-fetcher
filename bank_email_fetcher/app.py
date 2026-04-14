@@ -72,6 +72,8 @@ from bank_email_fetcher.fetcher import (
     _fetch_gmail_single_sync,
     _fetch_fastmail_single_sync,
     _process_email,
+    _save_failed_email,
+    load_or_fetch_raw_email,
 )
 from bank_email_fetcher.linker import build_link_context, link_transaction
 from bank_email_fetcher.statements import (
@@ -1680,14 +1682,11 @@ async def rule_toggle(rule_id: int):
 
 @app.post("/emails/{email_id}/reparse")
 async def reparse_email(email_id: int):
-    """Re-parse a failed email from the failed spool (.eml file).
+    """Re-parse a failed email, loading raw bytes from the spool or re-fetching
+    from the provider if the spool has aged out.
 
     Returns JSON so the caller can update the UI without a full-page redirect.
     """
-    import re as _re
-
-    SPOOL_DIR = Path(__file__).parent / "data" / "failed"
-
     async with async_session() as session:
         email_row = await session.get(Email, email_id)
         if not email_row:
@@ -1707,19 +1706,9 @@ async def reparse_email(email_id: int):
             status_code=400,
         )
 
-    # Locate the .eml file using the same sanitisation as _save_failed_email
-    safe_id = _re.sub(r"[^\w\-.]", "_", email_row.message_id)
-    spool_path = SPOOL_DIR / f"{email_row.provider}_{safe_id}.eml"
-    if not spool_path.exists():
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": f"Spool file not found ({spool_path.name}). It may have been cleaned up or never saved.",
-            },
-            status_code=404,
-        )
-
-    raw_bytes = spool_path.read_bytes()
+    raw_bytes, fetch_error = await load_or_fetch_raw_email(email_row)
+    if raw_bytes is None:
+        return JSONResponse({"ok": False, "error": fetch_error}, status_code=404)
 
     # Try standard transaction parse first
     error, txn_data, password_hint = _process_email(rule.bank, raw_bytes)
@@ -1764,7 +1753,10 @@ async def reparse_email(email_id: int):
                 )
 
     if not txn_data and not stmt_result:
-        # Parsing still fails — update error message so it's fresh, but keep status=failed
+        # Parsing still fails — update error message so it's fresh, but keep
+        # status=failed. Re-save the raw bytes to the spool so the next retry
+        # doesn't have to hit the provider again until the cleanup cron evicts them.
+        _save_failed_email(email_row.provider, email_row.message_id, raw_bytes)
         async with async_session() as session:
             em = await session.get(Email, email_id)
             if em:
@@ -1877,8 +1869,8 @@ async def reparse_email(email_id: int):
 
 @app.post("/emails/reparse-all-failed")
 async def reparse_all_failed():
-    """Re-parse all emails with status='failed' from the failed spool."""
-    import re as _re
+    """Re-parse all emails with status='failed', loading raw bytes from the
+    spool or re-fetching from the provider when the spool has aged out."""
     from sqlalchemy.exc import IntegrityError as _IntegrityError
     from bank_email_fetcher.statements import process_statement_email
     from bank_email_fetcher.db import StatementUpload
@@ -1887,7 +1879,6 @@ async def reparse_all_failed():
         link_transaction as _link_txn,
     )
 
-    SPOOL_DIR = Path(__file__).parent / "data" / "failed"
     succeeded = 0
     skipped = 0
     still_failed = 0
@@ -1906,13 +1897,16 @@ async def reparse_all_failed():
             still_failed += 1
             continue
 
-        safe_id = _re.sub(r"[^\w\-.]", "_", email_row.message_id)
-        spool_path = SPOOL_DIR / f"{email_row.provider}_{safe_id}.eml"
-        if not spool_path.exists():
+        raw_bytes, fetch_error = await load_or_fetch_raw_email(email_row)
+        if raw_bytes is None:
+            logger.info(
+                "Skipping bulk reparse for email %d: %s",
+                email_row.id,
+                fetch_error,
+            )
             still_failed += 1
             continue
 
-        raw_bytes = spool_path.read_bytes()
         error, txn_data, _ = _process_email(rule.bank, raw_bytes)
 
         stmt_result = None
@@ -1928,6 +1922,9 @@ async def reparse_all_failed():
                 pass
 
         if not txn_data and not stmt_result:
+            # Re-save to spool so the next retry doesn't re-fetch from the
+            # provider (cleanup cron will evict after FAILED_SPOOL_MAX_AGE_DAYS).
+            _save_failed_email(email_row.provider, email_row.message_id, raw_bytes)
             still_failed += 1
             continue
 
@@ -2869,10 +2866,6 @@ async def statements_reprocess_failed():
     )
     from bank_email_fetcher.bank_statements import process_bank_statement_email
 
-    SPOOL_DIR = Path(__file__).parent / "data" / "failed"
-    if not SPOOL_DIR.exists():
-        return RedirectResponse(url="/statements", status_code=303)
-
     async with async_session() as session:
         failed_emails = (
             await session.execute(
@@ -2884,15 +2877,10 @@ async def statements_reprocess_failed():
 
     processed = 0
     for email_row, rule in failed_emails:
-        import re as _re
-
-        safe_id = _re.sub(r"[^\w\-.]", "_", email_row.message_id)
-        spool_name = f"{email_row.provider}_{safe_id}.eml"
-        matches = [SPOOL_DIR / spool_name] if (SPOOL_DIR / spool_name).exists() else []
-        if not matches:
+        raw_bytes, _fetch_error = await load_or_fetch_raw_email(email_row)
+        if raw_bytes is None:
             continue
 
-        raw_bytes = matches[0].read_bytes()
         pdfs = extract_pdf_from_email(raw_bytes)
         if not pdfs:
             continue
