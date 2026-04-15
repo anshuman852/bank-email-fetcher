@@ -1,4 +1,3 @@
-# ty: ignore
 """Thin adapters around sibling parser packages."""
 
 from __future__ import annotations

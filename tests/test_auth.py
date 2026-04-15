@@ -67,6 +67,7 @@ class TestCheckCredentials:
             with pytest.raises(HTTPException) as exc_info:
                 check_credentials(None)
             assert exc_info.value.status_code == 401
+            assert exc_info.value.headers is not None
             assert exc_info.value.headers["WWW-Authenticate"] == "Basic"
 
     def test_enabled_accepts_correct(self):

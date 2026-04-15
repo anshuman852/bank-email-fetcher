@@ -470,7 +470,9 @@ def test_cc_date_range_spans_transactions_and_payments():
         txn_dates=["05/03/2026", "20/03/2026"],
         payment_dates=["25/02/2026", "15/03/2026"],
     )
-    lo, hi = dates_module.cc_stmt_date_range(parsed)
+    result = dates_module.cc_stmt_date_range(parsed)
+    assert result is not None
+    lo, hi = result
     assert lo == _dt.date(2026, 2, 25)
     assert hi == _dt.date(2026, 3, 20)
 
@@ -484,7 +486,9 @@ def test_cc_date_range_skips_unparseable_entries():
     import datetime as _dt
 
     parsed = _FakeCcParsed(txn_dates=["10/03/2026", "not-a-date", "15/03/2026"])
-    lo, hi = dates_module.cc_stmt_date_range(parsed)
+    result = dates_module.cc_stmt_date_range(parsed)
+    assert result is not None
+    lo, hi = result
     assert lo == _dt.date(2026, 3, 10)
     assert hi == _dt.date(2026, 3, 15)
 
@@ -497,7 +501,9 @@ def test_bank_date_range_prefers_declared_period():
         period_start="01/03/2026",
         period_end="31/03/2026",
     )
-    lo, hi = dates_module.bank_stmt_date_range(parsed)
+    result = dates_module.bank_stmt_date_range(parsed)
+    assert result is not None
+    lo, hi = result
     assert lo == _dt.date(2026, 3, 1)
     assert hi == _dt.date(2026, 3, 31)
 
@@ -506,6 +512,8 @@ def test_bank_date_range_falls_back_to_transaction_dates():
     import datetime as _dt
 
     parsed = _FakeBankParsed(txn_dates=["10/03/2026", "25/03/2026"])
-    lo, hi = dates_module.bank_stmt_date_range(parsed)
+    result = dates_module.bank_stmt_date_range(parsed)
+    assert result is not None
+    lo, hi = result
     assert lo == _dt.date(2026, 3, 10)
     assert hi == _dt.date(2026, 3, 25)

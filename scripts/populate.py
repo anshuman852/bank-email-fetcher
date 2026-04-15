@@ -74,25 +74,23 @@ def _extract_html_body(raw_bytes: bytes) -> str | None:
     msg = email_lib.message_from_bytes(raw_bytes)
 
     if msg.is_multipart():
-        # First pass: look for text/html
         for part in msg.walk():
             if part.get_content_type() == "text/html":
                 payload = part.get_payload(decode=True)
-                if payload:
+                if isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
                     return payload.decode(charset, errors="replace")
-        # Second pass: fall back to text/plain (e.g. Equitas)
         for part in msg.walk():
             if part.get_content_type() == "text/plain":
                 payload = part.get_payload(decode=True)
-                if payload:
+                if isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
                     return payload.decode(charset, errors="replace")
     else:
         ct = msg.get_content_type()
         if ct in ("text/html", "text/plain"):
             payload = msg.get_payload(decode=True)
-            if payload:
+            if isinstance(payload, bytes):
                 charset = msg.get_content_charset() or "utf-8"
                 return payload.decode(charset, errors="replace")
     return None

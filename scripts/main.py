@@ -123,7 +123,9 @@ def gmail_list(args: argparse.Namespace) -> None:
     criteria = _imap_search_criteria(args)
     console.print(f"[dim]Folder: {folder} | Search: {criteria}[/dim]")
 
-    typ, data = conn.uid("SEARCH", None, criteria)
+    # imaplib's stubs type charset as str, but None is the canonical
+    # "no charset" value for SEARCH.
+    typ, data = conn.uid("SEARCH", None, criteria)  # ty: ignore[invalid-argument-type]
     if typ != "OK" or not data[0]:
         console.print("[yellow]No emails found[/yellow]")
         conn.logout()
