@@ -340,6 +340,10 @@ async def reparse_email(
 
     # Success — update the email row and create transaction if needed
 
+    # Close the implicit read transaction opened earlier (from session.get at
+    # the top of this handler) so session.begin() below doesn't collide with it.
+    await session.rollback()
+
     async with session.begin():
         em = await session.get(Email, email_id)
         if not em:
@@ -440,6 +444,10 @@ async def reparse_all_failed(
             .where(Email.status == "failed")
         )
     ).all()
+
+    # Close the implicit read transaction opened by the select above so the
+    # per-email session.begin() below can start cleanly.
+    await session.rollback()
 
     for email_row, rule in rows:
         if not rule:
