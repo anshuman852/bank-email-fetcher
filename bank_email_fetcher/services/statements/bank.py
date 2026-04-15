@@ -346,8 +346,10 @@ def _last4(account_number: str | None) -> str | None:
     return digits[-4:] if len(digits) >= 4 else (digits if digits else None)
 
 
-async def _find_or_create_bank_account(bank: str, parsed) -> "Account":
-    """Find an existing bank_account Account or create one."""
+async def _find_bank_account(bank: str, parsed) -> "Account | None":
+    """Find an existing bank_account Account. Returns None when no match;
+    statements do not auto-create accounts.
+    """
     stmt_acct_number = parsed.account_number
     stmt_last4 = _last4(stmt_acct_number)
 
@@ -387,27 +389,12 @@ async def _find_or_create_bank_account(bank: str, parsed) -> "Account":
     if account:
         return account
 
-    # Auto-create
-    display = stmt_acct_number or "unknown"
-    label = f"{bank.upper()} Savings ({stmt_last4 or display})"
-    async with async_session() as session:
-        new_account = Account(
-            bank=bank,
-            label=label,
-            type="bank_account",
-            account_number=stmt_acct_number or stmt_last4,
-            active=True,
-        )
-        session.add(new_account)
-        await session.commit()
-        await session.refresh(new_account)
-        logger.info(
-            "Auto-created bank account %s (id=%s) for statement account %s",
-            label,
-            new_account.id,
-            display,
-        )
-        return new_account
+    logger.info(
+        "No matching bank_account for bank=%s account=%s; statement not imported",
+        bank,
+        stmt_acct_number,
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +430,22 @@ async def process_bank_statement_email(
     if not is_bank_stmt and "statement" in subject_lower:
         # Ambiguous — we'll try parsing and see if the PDF looks like a bank statement
         pass
+
+    # Require at least one bank account for this bank; statements must not
+    # auto-create accounts.
+    async with async_session() as session:
+        has_bank_account = (
+            await session.execute(
+                select(Account.id).where(
+                    Account.bank == bank,
+                    Account.type == "bank_account",
+                    Account.active.is_(True),
+                )
+            )
+        ).first() is not None
+    if not has_bank_account:
+        logger.info("Skipping bank statement path: no bank_account for bank=%s", bank)
+        return None
 
     # Extract PDF attachments
     pdfs = extract_pdf_from_email(raw_bytes)
@@ -575,8 +578,9 @@ async def process_bank_statement_email(
         logger.info("Bank statement parsing returned no transactions for %s", filename)
         return None
 
-    # Find or create the matching bank account
-    account = await _find_or_create_bank_account(bank, parsed)
+    account = await _find_bank_account(bank, parsed)
+    if account is None:
+        return None
 
     # Reconcile
     async with async_session() as session:

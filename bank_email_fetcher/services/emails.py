@@ -12,6 +12,7 @@ from bank_email_fetcher.db import (
     BankStatementUpload,
     Card,
     Email,
+    EmailKind,
     StatementUpload,
     Transaction,
     async_session,
@@ -126,35 +127,49 @@ async def handle_polled_email(
     txn_data = None
     stmt_result = None
 
+    statement_kinds = {
+        EmailKind.CC_STATEMENT,
+        EmailKind.BANK_STATEMENT,
+        EmailKind.STATEMENT,
+    }
+
     password_hint = None
-    if email_kind != "statement":
+    if email_kind not in statement_kinds:
         error, txn_data, password_hint = _process_email(rule.bank, raw_bytes)
 
-    should_try_statement = email_kind == "statement" or (
-        email_kind is None and not txn_data
+    try_cc = email_kind in (EmailKind.CC_STATEMENT, EmailKind.STATEMENT) or (
+        email_kind in (None, EmailKind.TRANSACTION) and not txn_data
     )
-    if should_try_statement:
+    try_bank = email_kind in (EmailKind.BANK_STATEMENT, EmailKind.STATEMENT) or (
+        email_kind in (None, EmailKind.TRANSACTION) and not txn_data
+    )
+
+    if try_cc or try_bank:
         subject = metadata.get("subject", "")
         logger.info(
-            "Email %s %s (bank=%s, subject=%r), trying statement path",
+            "Email %s %s (bank=%s, kind=%s, subject=%r), trying statement path",
             msg_id,
             "routed to statement pipeline"
-            if email_kind == "statement"
+            if email_kind in statement_kinds
             else "failed parsing",
             rule.bank,
+            email_kind,
             subject[:80],
         )
-        try:
-            stmt_result = await process_statement_email(
-                rule.bank,
-                raw_bytes,
-                subject,
-                source_id=source_id,
-            )
-        except Exception as stmt_err:
-            logger.warning("CC statement processing error for %s: %s", msg_id, stmt_err)
+        if try_cc:
+            try:
+                stmt_result = await process_statement_email(
+                    rule.bank,
+                    raw_bytes,
+                    subject,
+                    source_id=source_id,
+                )
+            except Exception as stmt_err:
+                logger.warning(
+                    "CC statement processing error for %s: %s", msg_id, stmt_err
+                )
 
-        if stmt_result is None:
+        if stmt_result is None and try_bank:
             try:
                 stmt_result = await process_bank_statement_email(
                     rule.bank,
@@ -173,7 +188,7 @@ async def handle_polled_email(
                 "Statement processing returned None for %s (no PDF or subject mismatch)",
                 msg_id,
             )
-            if email_kind == "statement":
+            if email_kind in statement_kinds:
                 error = "Statement processing returned no result"
 
     if stmt_result:

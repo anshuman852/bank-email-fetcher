@@ -19,13 +19,13 @@ Provides:
 
 - process_statement_email(): end-to-end pipeline called by fetcher.poll_all()
   when a normal email parse fails. Checks that the subject contains "statement",
-  extracts the PDF, tries parsing with and without stored passwords, finds or
-  creates the matching Account, reconciles, auto-imports missing transactions,
-  and creates a StatementUpload row.
+  extracts the PDF, tries parsing with and without stored passwords, finds the
+  matching Account, reconciles, auto-imports missing transactions, and creates
+  a StatementUpload row.
 
-- _find_or_create_account(): finds an existing credit card Account matching
-  the statement's card last-4 (checking both account_number and cards table),
-  or auto-creates one.
+- _find_account(): finds an existing credit card Account matching the
+  statement's card last-4 (checking both account_number and cards table).
+  Returns None when no match exists — statements do not auto-create accounts.
 
 Inline imports (from bank_email_fetcher.db, bank_email_fetcher.linker) are
 used inside async functions to avoid circular import issues.
@@ -452,13 +452,10 @@ async def _canonical_bank_name(bank: str) -> str:
     return bank.upper()
 
 
-async def _find_or_create_account(bank: str, parsed) -> "Account":
-    """Find an existing account matching the statement's card, or create one.
+async def _find_account(bank: str, parsed) -> "Account | None":
+    """Find an existing credit_card account matching the statement's card.
 
-    Uses case-insensitive bank name matching so that 'axis' (from fetch rules)
-    matches 'Axis' (from manually-created accounts). When auto-creating, the
-    bank name is canonicalized via ``_canonical_bank_name`` so casing is
-    consistent across Account / StatementUpload / Transaction rows.
+    Returns None if nothing matches — statements must not auto-create accounts.
     """
     stmt_card_last4 = last4_from_card(parsed.card_number)
     # Some banks (e.g. SBI) only show 2 digits: "XXXX XXXX XXXX XX67"
@@ -522,40 +519,12 @@ async def _find_or_create_account(bank: str, parsed) -> "Account":
     if account:
         return account
 
-    # No match — auto-create an account
-    card_display = parsed.card_number or "unknown"
-    bank_canon = await _canonical_bank_name(bank)
-    # Use statement name/cardholder if available, otherwise use card number
-    label = f"{bank_canon} CC ({stmt_card_last4 or card_display})"
-    async with async_session() as session:
-        new_account = Account(
-            bank=bank_canon,
-            label=label,
-            type="credit_card",
-            account_number=stmt_card_last4 or card_display,
-            active=True,
-        )
-        session.add(new_account)
-        await session.flush()
-        # Also create a card entry
-        if stmt_card_last4:
-            card = Card(
-                account_id=new_account.id,
-                card_mask=f"XX{stmt_card_last4}",
-                label="self",
-                is_primary=True,
-                active=True,
-            )
-            session.add(card)
-        await session.commit()
-        await session.refresh(new_account)
-        logger.info(
-            "Auto-created account %s (id=%s) for statement card %s",
-            label,
-            new_account.id,
-            card_display,
-        )
-        return new_account
+    logger.info(
+        "No matching credit_card account for bank=%s card=%s; statement not imported",
+        bank,
+        parsed.card_number,
+    )
+    return None
 
 
 async def process_statement_email(
@@ -585,6 +554,24 @@ async def process_statement_email(
         logger.debug(
             "Skipping bank account statement (not CC): %r",
             email_subject[:80] if email_subject else "",
+        )
+        return None
+
+    # Require at least one CC account for this bank; statements must not
+    # auto-create accounts.
+    async with async_session() as session:
+        has_cc_account = (
+            await session.execute(
+                select(Account.id).where(
+                    func.lower(Account.bank) == bank.lower(),
+                    Account.type == "credit_card",
+                    Account.active.is_(True),
+                )
+            )
+        ).first() is not None
+    if not has_cc_account:
+        logger.info(
+            "Skipping CC statement path: no credit_card account for bank=%s", bank
         )
         return None
 
@@ -709,8 +696,9 @@ async def process_statement_email(
         logger.warning("Failed to parse statement PDF from email: %s", e)
         return None
 
-    # Find or create the matching credit card account
-    account = await _find_or_create_account(bank, parsed)
+    account = await _find_account(bank, parsed)
+    if account is None:
+        return None
 
     # Reconcile
     async with async_session() as session:

@@ -37,41 +37,65 @@ def _ensure_fernet_key():
 
 
 # (provider, bank, sender, subject_filter, folder, email_kind)
-# email_kind: "statement" for CC/bank statement senders, None for transaction alerts
+# email_kind: one of "transaction" (txn alert), "cc_statement" (CC PDF),
+# "bank_statement" (bank PDF), or "statement" (legacy, try both pipelines).
+# None means auto-detect (txn parse, fall back to both statement pipelines).
 RULES = [
     # Slice (Gmail)
     ("gmail", "slice", "noreply@slice.bank.in", None, None, None),
     ("gmail", "slice", "noreply@sliceit.com", None, None, None),
+    # Slice CC + bank e-statements share the same sender; disambiguate by subject.
+    (
+        "gmail",
+        "slice",
+        "noreply@slice.bank.in",
+        "credit card statement",
+        None,
+        "cc_statement",
+    ),
+    (
+        "gmail",
+        "slice",
+        "noreply@slice.bank.in",
+        "bank statement",
+        None,
+        "bank_statement",
+    ),
     # ICICI (Gmail)
     ("gmail", "icici", "credit_cards@icicibank.com", None, None, None),
     ("gmail", "icici", "customernotification@icici.bank.in", None, None, None),
     ("gmail", "icici", "customercare@icicibank.com", "Transaction alert", None, None),
-    # CC e-statements (PDF attachments processed by cc-parser)
+    ("gmail", "icici", "credit_cards@icici.bank.in", None, None, None),
     (
         "gmail",
         "icici",
         "credit_cards@icici.bank.in",
-        "ICICI Bank Credit Card Statement",
+        "credit card statement",
         None,
-        "statement",
+        "cc_statement",
     ),
-    # ICICI additional (Gmail)
-    ("gmail", "icici", "credit_cards@icici.bank.in", None, None, None),
+    ("gmail", "icici", "estatement@icici.bank.in", None, None, "bank_statement"),
     # HDFC (Gmail)
     ("gmail", "hdfc", "alerts@hdfcbank.bank.in", None, None, None),
-    # CC e-statements (PDF attachments processed by cc-parser)
     (
         "gmail",
         "hdfc",
         "Emailstatements.cards@hdfcbank.net",
         "statement",
         None,
-        "statement",
+        "cc_statement",
+    ),
+    (
+        "gmail",
+        "hdfc",
+        "hdfcbanksmartstatement@hdfcbank.bank.in",
+        None,
+        None,
+        "bank_statement",
     ),
     # Axis (Gmail)
     ("gmail", "axis", "alerts@axis.bank.in", None, None, None),
-    # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "axis", "cc.statements@axis.bank.in", "statement", None, "statement"),
+    ("gmail", "axis", "cc.statements@axis.bank.in", "statement", None, "cc_statement"),
     # IndusInd (Gmail)
     ("gmail", "indusind", "transactionalert@indusind.com", None, None, None),
     ("gmail", "indusind", "indusind_bank@indusind.com", "Transaction", None, None),
@@ -92,36 +116,40 @@ RULES = [
         None,
         None,
     ),
-    # CC e-statements (PDF attachments processed by cc-parser)
     (
         "gmail",
         "indusind",
         "creditcard.estatements@indusind.com",
         "statement",
         None,
-        "statement",
+        "cc_statement",
     ),
     # Kotak (Gmail)
     ("gmail", "kotak", "BankAlerts@kotak.com", None, None, None),
     ("gmail", "kotak", "no-reply@kotak.com", None, None, None),
-    ("gmail", "kotak", "bankalerts@kotak.bank.in", None, None, None),
     ("gmail", "kotak", "nach.alerts@kotak.bank.in", None, None, None),
+    (
+        "gmail",
+        "kotak",
+        "BankStatements@kotak.bank.in",
+        "statement",
+        None,
+        "bank_statement",
+    ),
     # SBI Card (Gmail)
     ("gmail", "sbi", "onlinesbicard@sbicard.com", None, None, None),
     ("gmail", "sbi", "paynet@billdesk.in", None, None, None),
-    # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "sbi", "Statements@sbicard.com", "statement", None, "statement"),
+    ("gmail", "sbi", "Statements@sbicard.com", "statement", None, "cc_statement"),
     # HSBC (Gmail)
     ("gmail", "hsbc", "hsbc@mail.hsbc.co.in", "Credit Card", None, None),
     ("gmail", "hsbc", "alerts@mail.hsbc.co.in", "Credit Card", None, None),
-    # CC e-statements (PDF attachments processed by cc-parser)
     (
         "gmail",
         "hsbc",
         "creditcardstatement@mail.hsbc.co.in",
         "statement",
         None,
-        "statement",
+        "cc_statement",
     ),
     (
         "gmail",
@@ -129,19 +157,33 @@ RULES = [
         "campaign@mail.hsbc.co.in",
         "statement",
         None,
-        "statement",
+        "cc_statement",
     ),
-    # IDFC FIRST (Gmail)
+    # IDFC FIRST (Gmail) — one sender handles both CC and bank statements;
+    # disambiguate by subject.
     ("gmail", "idfc", "transaction.alerts@idfcfirstbank.com", None, None, None),
     ("gmail", "idfc", "noreply@idfcfirstbank.com", None, None, None),
-    # CC + bank account e-statements (PDF attachments; fetcher tries CC then bank parser)
-    ("gmail", "idfc", "statement@idfcfirst.bank.in", "statement", None, "statement"),
+    (
+        "gmail",
+        "idfc",
+        "statement@idfcfirst.bank.in",
+        "credit card statement",
+        None,
+        "cc_statement",
+    ),
+    (
+        "gmail",
+        "idfc",
+        "statement@idfcfirst.bank.in",
+        "account statement",
+        None,
+        "bank_statement",
+    ),
     # Equitas (Gmail)
     ("gmail", "equitas", "cc-alerts@equitas.bank.in", None, None, None),
     # OneCard / BOBCARD (Gmail)
     ("gmail", "onecard", "no-reply@getonecard.app", None, None, None),
-    # CC e-statements (PDF attachments processed by cc-parser)
-    ("gmail", "onecard", "statement@getonecard.app", "statement", None, "statement"),
+    ("gmail", "onecard", "statement@getonecard.app", "statement", None, "cc_statement"),
     # Union Bank of India (Gmail)
     (
         "gmail",
@@ -151,7 +193,6 @@ RULES = [
         None,
         None,
     ),
-    ("gmail", "uboi", "loanemail@unionbankofindia.bank", None, None, None),
     # Bank of Maharashtra (Gmail)
     ("gmail", "bom", "mahaalert@mahabank.co.in", None, None, None),
     # Yes Bank (Gmail)

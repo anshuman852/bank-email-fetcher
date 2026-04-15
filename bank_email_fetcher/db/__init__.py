@@ -3,7 +3,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bank_email_fetcher.config import settings
-from bank_email_fetcher.db.enums import PaymentStatus
+from bank_email_fetcher.db.enums import EmailKind, PaymentStatus
 from bank_email_fetcher.db.init_db import init_db as _init_db
 from bank_email_fetcher.db.models import (
     Account,
@@ -33,6 +33,7 @@ __all__ = [
     "Base",
     "Card",
     "Email",
+    "EmailKind",
     "EmailSource",
     "FetchRule",
     "PaymentStatus",
