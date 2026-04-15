@@ -485,6 +485,7 @@ async def process_bank_statement_email(
                     await session.execute(
                         select(Account).where(
                             Account.bank == bank,
+                            Account.type == "bank_account",
                             Account.active.is_(True),
                         )
                     )
