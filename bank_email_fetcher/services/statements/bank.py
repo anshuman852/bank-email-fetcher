@@ -546,11 +546,12 @@ async def process_bank_statement_email(
                         status="password_required",
                         error="PDF is encrypted — provide password via Statements page",
                     )
-                    # Store password hint on the account if we found one
-                    if password_hint and not account.statement_password_hint:
-                        account_row = await session.get(Account, account.id)
-                        if account_row:
-                            account_row.statement_password_hint = password_hint
+                    if (
+                        password_hint
+                        and not account.statement_password_hint
+                        and (account_row := await session.get(Account, account.id))
+                    ):
+                        account_row.statement_password_hint = password_hint
                     session.add(upload)
                     await session.commit()
                     logger.info(
