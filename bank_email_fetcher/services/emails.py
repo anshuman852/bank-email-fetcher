@@ -107,6 +107,88 @@ def _process_email(
     )
 
 
+_STATEMENT_KINDS = {
+    EmailKind.CC_STATEMENT,
+    EmailKind.BANK_STATEMENT,
+    EmailKind.STATEMENT,
+}
+
+
+async def parse_email_by_kind(
+    *,
+    bank: str,
+    email_kind: str | None,
+    raw_bytes: bytes,
+    subject: str,
+    source_id: int | None,
+    log_ref: str,
+) -> tuple[str | None, dict | None, str | None, dict | None]:
+    """Run txn and/or statement pipelines based on the rule's email_kind.
+
+    Returns ``(error, txn_data, password_hint, stmt_result)`` — exactly one of
+    txn_data or stmt_result will be populated on success.
+    """
+    error: str | None = None
+    txn_data: dict | None = None
+    password_hint: str | None = None
+    stmt_result: dict | None = None
+
+    if email_kind not in _STATEMENT_KINDS:
+        error, txn_data, password_hint = _process_email(bank, raw_bytes)
+
+    try_cc = email_kind in (EmailKind.CC_STATEMENT, EmailKind.STATEMENT) or (
+        email_kind in (None, EmailKind.TRANSACTION) and not txn_data
+    )
+    try_bank = email_kind in (EmailKind.BANK_STATEMENT, EmailKind.STATEMENT) or (
+        email_kind in (None, EmailKind.TRANSACTION) and not txn_data
+    )
+
+    if try_cc or try_bank:
+        logger.info(
+            "Email %s %s (bank=%s, kind=%s, subject=%r), trying statement path",
+            log_ref,
+            "routed to statement pipeline"
+            if email_kind in _STATEMENT_KINDS
+            else "failed parsing",
+            bank,
+            email_kind,
+            subject[:80],
+        )
+        if try_cc:
+            try:
+                stmt_result = await process_statement_email(
+                    bank, raw_bytes, subject, source_id=source_id
+                )
+            except Exception as stmt_err:
+                logger.warning(
+                    "CC statement processing error for %s: %s", log_ref, stmt_err
+                )
+
+        if stmt_result is None and try_bank:
+            try:
+                stmt_result = await process_bank_statement_email(
+                    bank,
+                    raw_bytes,
+                    subject,
+                    source_id=source_id,
+                    password_hint=password_hint,
+                )
+            except Exception as stmt_err:
+                logger.warning(
+                    "Bank statement processing error for %s: %s", log_ref, stmt_err
+                )
+
+        if stmt_result is None:
+            logger.info(
+                "Statement processing returned None for %s (no PDF or subject mismatch)",
+                log_ref,
+            )
+            if email_kind in _STATEMENT_KINDS:
+                error = "Statement processing returned no result"
+
+    return error, txn_data, password_hint, stmt_result
+
+
 async def handle_polled_email(
     *,
     rule,
@@ -123,73 +205,15 @@ async def handle_polled_email(
     received_at = _parse_email_date(raw_bytes)
 
     email_kind = getattr(rule, "email_kind", None)
-    error = None
-    txn_data = None
-    stmt_result = None
-
-    statement_kinds = {
-        EmailKind.CC_STATEMENT,
-        EmailKind.BANK_STATEMENT,
-        EmailKind.STATEMENT,
-    }
-
-    password_hint = None
-    if email_kind not in statement_kinds:
-        error, txn_data, password_hint = _process_email(rule.bank, raw_bytes)
-
-    try_cc = email_kind in (EmailKind.CC_STATEMENT, EmailKind.STATEMENT) or (
-        email_kind in (None, EmailKind.TRANSACTION) and not txn_data
+    subject = metadata.get("subject", "")
+    error, txn_data, password_hint, stmt_result = await parse_email_by_kind(
+        bank=rule.bank,
+        email_kind=email_kind,
+        raw_bytes=raw_bytes,
+        subject=subject,
+        source_id=source_id,
+        log_ref=msg_id,
     )
-    try_bank = email_kind in (EmailKind.BANK_STATEMENT, EmailKind.STATEMENT) or (
-        email_kind in (None, EmailKind.TRANSACTION) and not txn_data
-    )
-
-    if try_cc or try_bank:
-        subject = metadata.get("subject", "")
-        logger.info(
-            "Email %s %s (bank=%s, kind=%s, subject=%r), trying statement path",
-            msg_id,
-            "routed to statement pipeline"
-            if email_kind in statement_kinds
-            else "failed parsing",
-            rule.bank,
-            email_kind,
-            subject[:80],
-        )
-        if try_cc:
-            try:
-                stmt_result = await process_statement_email(
-                    rule.bank,
-                    raw_bytes,
-                    subject,
-                    source_id=source_id,
-                )
-            except Exception as stmt_err:
-                logger.warning(
-                    "CC statement processing error for %s: %s", msg_id, stmt_err
-                )
-
-        if stmt_result is None and try_bank:
-            try:
-                stmt_result = await process_bank_statement_email(
-                    rule.bank,
-                    raw_bytes,
-                    subject,
-                    source_id=source_id,
-                    password_hint=password_hint,
-                )
-            except Exception as stmt_err:
-                logger.warning(
-                    "Bank statement processing error for %s: %s", msg_id, stmt_err
-                )
-
-        if stmt_result is None:
-            logger.info(
-                "Statement processing returned None for %s (no PDF or subject mismatch)",
-                msg_id,
-            )
-            if email_kind in statement_kinds:
-                error = "Statement processing returned no result"
 
     if stmt_result:
         error = None

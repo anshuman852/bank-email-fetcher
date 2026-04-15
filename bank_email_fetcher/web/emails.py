@@ -43,14 +43,12 @@ from bank_email_fetcher.schemas.emails import (
     ReparseAllFailedResponse,
     ReparseEmailResponse,
 )
-from bank_email_fetcher.services.emails import _process_email
+from bank_email_fetcher.services.emails import parse_email_by_kind
 from bank_email_fetcher.services.linker import build_link_context, link_transaction
 from bank_email_fetcher.services.settings import (
     get_telegram_chat_id,
     should_notify_transactions,
 )
-from bank_email_fetcher.services.statements.bank import process_bank_statement_email
-from bank_email_fetcher.services.statements.cc import process_statement_email
 from bank_email_fetcher.services.telegram import (
     build_account_label,
     send_transaction_notification,
@@ -288,41 +286,14 @@ async def reparse_email(
             status_code=404, detail=fetch_error or "Unable to load raw email"
         )
 
-    # Try standard transaction parse first
-    error, txn_data, password_hint = _process_email(rule.bank, raw_bytes)
-
-    # If that failed (or parsed as statement with no transaction), try statement path
-    stmt_result = None
-    if not txn_data:
-        try:
-            stmt_result = await process_statement_email(
-                rule.bank,
-                raw_bytes,
-                email_row.subject or "",
-                source_id=email_row.source_id,
-            )
-        except Exception as stmt_err:
-            logger.warning(
-                "CC statement processing error during reparse of email %d: %s",
-                email_id,
-                stmt_err,
-            )
-
-        if stmt_result is None:
-            try:
-                stmt_result = await process_bank_statement_email(
-                    rule.bank,
-                    raw_bytes,
-                    email_row.subject or "",
-                    source_id=email_row.source_id,
-                    password_hint=password_hint,
-                )
-            except Exception as stmt_err:
-                logger.warning(
-                    "Bank statement processing error during reparse of email %d: %s",
-                    email_id,
-                    stmt_err,
-                )
+    error, txn_data, password_hint, stmt_result = await parse_email_by_kind(
+        bank=rule.bank,
+        email_kind=getattr(rule, "email_kind", None),
+        raw_bytes=raw_bytes,
+        subject=email_row.subject or "",
+        source_id=email_row.source_id,
+        log_ref=f"reparse:{email_id}",
+    )
 
     if not txn_data and not stmt_result:
         # Parsing still fails — update error message so it's fresh, but keep
@@ -466,25 +437,14 @@ async def reparse_all_failed(
             still_failed += 1
             continue
 
-        error, txn_data, _ = _process_email(rule.bank, raw_bytes)
-
-        stmt_result = None
-        if error and not txn_data:
-            try:
-                stmt_result = await process_statement_email(
-                    rule.bank,
-                    raw_bytes,
-                    email_row.subject or "",
-                    source_id=email_row.source_id,
-                )
-            except Exception:
-                logger.warning(
-                    "Statement reparse failed for email id=%s bank=%s source_id=%s",
-                    email_row.id,
-                    rule.bank,
-                    email_row.source_id,
-                    exc_info=True,
-                )
+        error, txn_data, _, stmt_result = await parse_email_by_kind(
+            bank=rule.bank,
+            email_kind=getattr(rule, "email_kind", None),
+            raw_bytes=raw_bytes,
+            subject=email_row.subject or "",
+            source_id=email_row.source_id,
+            log_ref=f"bulk-reparse:{email_row.id}",
+        )
 
         if not txn_data and not stmt_result:
             # Re-save to spool so the next retry doesn't re-fetch from the
