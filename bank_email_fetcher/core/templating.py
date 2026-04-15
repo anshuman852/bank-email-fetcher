@@ -6,6 +6,12 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 
 
+def currency_symbol(code: str | None) -> str:
+    if code and code.upper() == "USD":
+        return "$"
+    return "₹"
+
+
 def format_inr_compact(value) -> str:
     amount = value or 0
     abs_amount = abs(float(amount))
@@ -28,4 +34,5 @@ def get_templates() -> Jinja2Templates:
         directory=Path(__file__).resolve().parent.parent / "templates"
     )
     templates.env.filters["inr_compact"] = format_inr_compact
+    templates.env.filters["currency_symbol"] = currency_symbol
     return templates

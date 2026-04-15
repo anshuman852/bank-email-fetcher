@@ -65,7 +65,7 @@
         <dd>
             <a href="#" onclick="event.preventDefault(); openDetailModal('/transactions/{{ txn.id }}/detail');" style="font-weight: 600;">
                 Transaction #{{ txn.id }} &mdash;
-                {% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ "{:,.2f}".format(txn.amount) }}
+                {% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}{{ txn.currency|currency_symbol }}{{ "{:,.2f}".format(txn.amount) }}
                 {% if txn.counterparty %}({{ txn.counterparty }}){% endif %}
             </a>
         </dd>

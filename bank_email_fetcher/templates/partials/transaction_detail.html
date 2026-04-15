@@ -32,7 +32,7 @@
     <div>
         <dt>Amount</dt>
         <dd class="amt {% if txn.direction == 'debit' %}amt-debit{% else %}amt-credit{% endif %}" style="font-size: 1.1rem;">
-            {% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}&#8377;{{ "{:,.2f}".format(txn.amount) }}
+            {% if txn.direction == "debit" %}&minus;{% else %}+{% endif %}{{ txn.currency|currency_symbol }}{{ "{:,.2f}".format(txn.amount) }}
         </dd>
     </div>
     <div>
