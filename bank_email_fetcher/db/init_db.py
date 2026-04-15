@@ -112,6 +112,12 @@ async def init_db(engine) -> None:
             await conn.execute(
                 text("ALTER TABLE accounts ADD COLUMN statement_password_hint VARCHAR")
             )
+        try:
+            await conn.execute(text("SELECT category FROM transactions LIMIT 0"))
+        except Exception:
+            await conn.execute(
+                text("ALTER TABLE transactions ADD COLUMN category VARCHAR")
+            )
         nach_marker = (
             await conn.execute(
                 text(

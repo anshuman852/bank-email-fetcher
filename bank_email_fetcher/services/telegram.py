@@ -234,15 +234,24 @@ async def _handle_reply(update: Update, context) -> None:
         return
     txn_id = int(match.group(1))
 
-    note_text = msg.text.strip()
-    if not note_text:
+    reply_text = msg.text.strip()
+    if not reply_text:
         return
+
+    # Reply format: note on line 1, optional category on line 2+.
+    # If the reply has no second line, category is left untouched.
+    first_line, sep, rest = reply_text.partition("\n")
+    note_text = first_line.strip() or None
+    category_text = rest.strip() if sep else None
 
     async with async_session() as session:
         txn = await session.get(Transaction, txn_id)
         if txn:
             txn.note = note_text
+            if category_text is not None:
+                txn.category = category_text or None
             await session.commit()
-            await msg.reply_text(f"Saved note for #{txn_id}")
+            saved = "note" + (" + category" if category_text is not None else "")
+            await msg.reply_text(f"Saved {saved} for #{txn_id}")
         else:
             await msg.reply_text(f"Transaction #{txn_id} not found")

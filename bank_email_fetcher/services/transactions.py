@@ -17,3 +17,17 @@ async def update_transaction_note(
     txn.note = cleaned or None
     await session.commit()
     return True, cleaned
+
+
+async def update_transaction_category(
+    session: AsyncSession,
+    txn_id: int,
+    category: str,
+) -> tuple[bool, str | None]:
+    cleaned = category.strip()
+    txn = await session.get(Transaction, txn_id)
+    if not txn:
+        return False, None
+    txn.category = cleaned or None
+    await session.commit()
+    return True, cleaned

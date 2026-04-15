@@ -243,6 +243,7 @@ class Transaction(Base):
     balance: Mapped[Decimal | None] = mapped_column(Numeric(precision=12, scale=2))
     raw_description: Mapped[str | None] = mapped_column(Text)
     note: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime, default=utc_now
     )

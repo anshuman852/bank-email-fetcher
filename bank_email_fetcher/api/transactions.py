@@ -3,10 +3,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bank_email_fetcher.core.deps import get_session
 from bank_email_fetcher.schemas.transactions import (
+    TransactionCategoryResponse,
+    TransactionCategoryUpdate,
     TransactionNoteResponse,
     TransactionNoteUpdate,
 )
-from bank_email_fetcher.services.transactions import update_transaction_note
+from bank_email_fetcher.services.transactions import (
+    update_transaction_category,
+    update_transaction_note,
+)
 
 router = APIRouter()
 
@@ -21,3 +26,19 @@ async def update_note(
     if not ok:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return TransactionNoteResponse(ok=True, note=note)
+
+
+@router.post(
+    "/transactions/{txn_id}/category", response_model=TransactionCategoryResponse
+)
+async def update_category(
+    txn_id: int,
+    payload: TransactionCategoryUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> TransactionCategoryResponse:
+    ok, category = await update_transaction_category(
+        session, txn_id, payload.category
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return TransactionCategoryResponse(ok=True, category=category)
