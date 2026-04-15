@@ -13,13 +13,19 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from bank_email_fetcher import app as app_module
+from bank_email_fetcher.main import create_app
+import bank_email_fetcher.core.deps as core_deps
 from bank_email_fetcher.db import (
     Account,
     Base,
     BankStatementUpload,
     StatementUpload,
 )
+from bank_email_fetcher.services import accounts as accounts_module
+from bank_email_fetcher.services.statements import dates as dates_module
+from bank_email_fetcher.services.statements import shared as statements_shared
+from bank_email_fetcher.web import bank_statements as bank_routes
+from bank_email_fetcher.web import statements as cc_routes
 
 
 @pytest.fixture
@@ -29,12 +35,13 @@ def anyio_backend():
 
 @pytest.fixture
 async def session_factory(monkeypatch):
-    """Swap the module-level async_session factory for an in-memory DB."""
+    """Swap request/session factories for an in-memory DB."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    monkeypatch.setattr(app_module, "async_session", maker)
+    monkeypatch.setattr(statements_shared, "async_session", maker)
+    monkeypatch.setattr(core_deps, "async_session", maker)
     yield maker
     await engine.dispose()
 
@@ -43,9 +50,7 @@ async def _seed_account_with_uploads(
     maker, cc_statuses: list[str], bank_statuses: list[str]
 ) -> int:
     async with maker() as session:
-        account = Account(
-            bank="HDFC", label="HDFC Credit Card", type="credit_card"
-        )
+        account = Account(bank="HDFC", label="HDFC Credit Card", type="credit_card")
         session.add(account)
         await session.flush()
         for idx, status in enumerate(cc_statuses):
@@ -84,12 +89,13 @@ async def test_only_password_required_uploads_are_retried(session_factory):
 
     cc_helper = AsyncMock(return_value=True)
     bank_helper = AsyncMock(return_value=True)
-    with (
-        patch.object(app_module, "_retry_cc_statement_upload", cc_helper),
-        patch.object(app_module, "_retry_bank_statement_upload", bank_helper),
-    ):
-        result = await app_module.retry_password_required_statements(
-            account_id, "secret"
+    async with session_factory() as session:
+        result = await accounts_module.retry_password_required_statements(
+            session,
+            account_id,
+            "secret",
+            retry_cc_upload=cc_helper,
+            retry_bank_upload=bank_helper,
         )
 
     assert cc_helper.await_count == 1
@@ -114,12 +120,13 @@ async def test_helper_returning_false_counts_as_failure(session_factory):
 
     cc_helper = AsyncMock(side_effect=[True, False])
     bank_helper = AsyncMock(return_value=False)
-    with (
-        patch.object(app_module, "_retry_cc_statement_upload", cc_helper),
-        patch.object(app_module, "_retry_bank_statement_upload", bank_helper),
-    ):
-        result = await app_module.retry_password_required_statements(
-            account_id, "wrong"
+    async with session_factory() as session:
+        result = await accounts_module.retry_password_required_statements(
+            session,
+            account_id,
+            "wrong",
+            retry_cc_upload=cc_helper,
+            retry_bank_upload=bank_helper,
         )
 
     assert result == {
@@ -141,9 +148,12 @@ async def test_helper_exception_is_isolated(session_factory):
     )
 
     cc_helper = AsyncMock(side_effect=[RuntimeError("boom"), True])
-    with patch.object(app_module, "_retry_cc_statement_upload", cc_helper):
-        result = await app_module.retry_password_required_statements(
-            account_id, "secret"
+    async with session_factory() as session:
+        result = await accounts_module.retry_password_required_statements(
+            session,
+            account_id,
+            "secret",
+            retry_cc_upload=cc_helper,
         )
 
     assert cc_helper.await_count == 2
@@ -161,12 +171,13 @@ async def test_empty_account_returns_zero_counts(session_factory):
 
     cc_helper = AsyncMock()
     bank_helper = AsyncMock()
-    with (
-        patch.object(app_module, "_retry_cc_statement_upload", cc_helper),
-        patch.object(app_module, "_retry_bank_statement_upload", bank_helper),
-    ):
-        result = await app_module.retry_password_required_statements(
-            account_id, "secret"
+    async with session_factory() as session:
+        result = await accounts_module.retry_password_required_statements(
+            session,
+            account_id,
+            "secret",
+            retry_cc_upload=cc_helper,
+            retry_bank_upload=bank_helper,
         )
 
     cc_helper.assert_not_awaited()
@@ -244,9 +255,9 @@ async def test_cc_retry_saves_password_only_on_success(session_factory):
     helper = _make_helper_that_flips_status(
         session_factory, StatementUpload, result=True
     )
-    with patch.object(app_module, "_retry_cc_statement_upload", helper):
+    with patch.object(cc_routes, "retry_cc_statement_upload", helper):
         async with AsyncClient(
-            transport=ASGITransport(app=app_module.app), base_url="http://test"
+            transport=ASGITransport(app=create_app()), base_url="http://test"
         ) as client:
             resp = await client.post(
                 f"/statements/{upload_id}/retry",
@@ -266,9 +277,9 @@ async def test_cc_retry_does_not_save_password_on_failure(session_factory):
     from httpx import ASGITransport, AsyncClient
 
     helper = AsyncMock(return_value=False)
-    with patch.object(app_module, "_retry_cc_statement_upload", helper):
+    with patch.object(cc_routes, "retry_cc_statement_upload", helper):
         async with AsyncClient(
-            transport=ASGITransport(app=app_module.app), base_url="http://test"
+            transport=ASGITransport(app=create_app()), base_url="http://test"
         ) as client:
             resp = await client.post(
                 f"/statements/{upload_id}/retry",
@@ -290,9 +301,9 @@ async def test_bank_retry_saves_password_only_on_success(session_factory):
     helper = _make_helper_that_flips_status(
         session_factory, BankStatementUpload, result=True
     )
-    with patch.object(app_module, "_retry_bank_statement_upload", helper):
+    with patch.object(bank_routes, "retry_bank_statement_upload", helper):
         async with AsyncClient(
-            transport=ASGITransport(app=app_module.app), base_url="http://test"
+            transport=ASGITransport(app=create_app()), base_url="http://test"
         ) as client:
             resp = await client.post(
                 f"/statements/bank/{upload_id}/retry",
@@ -344,11 +355,11 @@ async def test_cc_retry_with_save_password_unlocks_siblings(session_factory):
         session_factory, BankStatementUpload, result=True
     )
     with (
-        patch.object(app_module, "_retry_cc_statement_upload", cc_helper),
-        patch.object(app_module, "_retry_bank_statement_upload", bank_helper),
+        patch.object(cc_routes, "retry_cc_statement_upload", cc_helper),
+        patch.object(cc_routes, "retry_bank_statement_upload", bank_helper),
     ):
         async with AsyncClient(
-            transport=ASGITransport(app=app_module.app), base_url="http://test"
+            transport=ASGITransport(app=create_app()), base_url="http://test"
         ) as client:
             resp = await client.post(
                 f"/statements/{clicked_id}/retry",
@@ -384,9 +395,9 @@ async def test_cc_retry_without_save_password_does_not_unlock_siblings(session_f
         await session.commit()
 
     cc_helper = AsyncMock(return_value=True)
-    with patch.object(app_module, "_retry_cc_statement_upload", cc_helper):
+    with patch.object(cc_routes, "retry_cc_statement_upload", cc_helper):
         async with AsyncClient(
-            transport=ASGITransport(app=app_module.app), base_url="http://test"
+            transport=ASGITransport(app=create_app()), base_url="http://test"
         ) as client:
             resp = await client.post(
                 f"/statements/{clicked_id}/retry",
@@ -405,9 +416,9 @@ async def test_bank_retry_does_not_save_password_on_failure(session_factory):
     from httpx import ASGITransport, AsyncClient
 
     helper = AsyncMock(return_value=False)
-    with patch.object(app_module, "_retry_bank_statement_upload", helper):
+    with patch.object(bank_routes, "retry_bank_statement_upload", helper):
         async with AsyncClient(
-            transport=ASGITransport(app=app_module.app), base_url="http://test"
+            transport=ASGITransport(app=create_app()), base_url="http://test"
         ) as client:
             resp = await client.post(
                 f"/statements/bank/{upload_id}/retry",
@@ -459,21 +470,21 @@ def test_cc_date_range_spans_transactions_and_payments():
         txn_dates=["05/03/2026", "20/03/2026"],
         payment_dates=["25/02/2026", "15/03/2026"],
     )
-    lo, hi = app_module._cc_stmt_date_range(parsed)
+    lo, hi = dates_module.cc_stmt_date_range(parsed)
     assert lo == _dt.date(2026, 2, 25)
     assert hi == _dt.date(2026, 3, 20)
 
 
 def test_cc_date_range_returns_none_when_no_parseable_dates():
     parsed = _FakeCcParsed(txn_dates=[], payment_dates=[])
-    assert app_module._cc_stmt_date_range(parsed) is None
+    assert dates_module.cc_stmt_date_range(parsed) is None
 
 
 def test_cc_date_range_skips_unparseable_entries():
     import datetime as _dt
 
     parsed = _FakeCcParsed(txn_dates=["10/03/2026", "not-a-date", "15/03/2026"])
-    lo, hi = app_module._cc_stmt_date_range(parsed)
+    lo, hi = dates_module.cc_stmt_date_range(parsed)
     assert lo == _dt.date(2026, 3, 10)
     assert hi == _dt.date(2026, 3, 15)
 
@@ -486,7 +497,7 @@ def test_bank_date_range_prefers_declared_period():
         period_start="01/03/2026",
         period_end="31/03/2026",
     )
-    lo, hi = app_module._bank_stmt_date_range(parsed)
+    lo, hi = dates_module.bank_stmt_date_range(parsed)
     assert lo == _dt.date(2026, 3, 1)
     assert hi == _dt.date(2026, 3, 31)
 
@@ -495,6 +506,6 @@ def test_bank_date_range_falls_back_to_transaction_dates():
     import datetime as _dt
 
     parsed = _FakeBankParsed(txn_dates=["10/03/2026", "25/03/2026"])
-    lo, hi = app_module._bank_stmt_date_range(parsed)
+    lo, hi = dates_module.bank_stmt_date_range(parsed)
     assert lo == _dt.date(2026, 3, 10)
     assert hi == _dt.date(2026, 3, 25)

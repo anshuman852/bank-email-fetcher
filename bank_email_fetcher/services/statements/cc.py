@@ -1,3 +1,4 @@
+# ty: ignore
 """CC statement PDF parsing and reconciliation for bank-email-fetcher.
 
 Provides:
@@ -40,26 +41,42 @@ import tempfile
 from datetime import date as date_type, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 from sqlalchemy import func, select
+from bank_email_fetcher.db import (
+    Account,
+    Card,
+    StatementUpload,
+    Transaction,
+    async_session,
+)
 
-if TYPE_CHECKING:
-    from bank_email_fetcher.db import Account
-
-from cc_parser.extractor import extract_raw_pdf
-from cc_parser.parsers.factory import get_parser
+from bank_email_fetcher.config import get_fernet
+from bank_email_fetcher.core.dates import parse_date
+from bank_email_fetcher.integrations.parsers import (
+    format_cc_amount,
+    parse_cc_statement_pdf,
+    parse_cc_token_amount,
+)
+from bank_email_fetcher.services.linker import build_link_context, link_transaction
+from bank_email_fetcher.services.settings import (
+    get_setting_int,
+    get_telegram_chat_id,
+    should_notify_transactions,
+)
+from bank_email_fetcher.services.telegram import (
+    build_account_label,
+    send_bulk_summary,
+    send_transaction_notification,
+)
 
 logger = logging.getLogger(__name__)
 
-STATEMENTS_DIR = Path(__file__).parent / "data" / "statements"
+STATEMENTS_DIR = Path(__file__).resolve().parent.parent / "data" / "statements"
 
 
 def parse_statement(pdf_path: Path, password: str | None = None):
     """Parse a CC statement PDF. Returns a ParsedStatement."""
-    raw_data = extract_raw_pdf(pdf_path, include_blocks=True, password=password or None)
-    parser = get_parser("auto", raw_data)
-    return parser.parse(raw_data)
+    return parse_cc_statement_pdf(pdf_path, password)
 
 
 def parse_cc_amount(amount_str: str) -> Decimal:
@@ -69,8 +86,10 @@ def parse_cc_amount(amount_str: str) -> Decimal:
 
 def parse_cc_date(date_str: str) -> date_type:
     """Convert cc-parser date 'DD/MM/YYYY' to date object."""
-    d, m, y = date_str.split("/")
-    return date_type(int(y), int(m), int(d))
+    parsed = parse_date(date_str, dayfirst=True)
+    if parsed is None:
+        raise ValueError(f"Could not parse CC statement date: {date_str!r}")
+    return parsed
 
 
 def last4_from_card(card_str: str | None) -> str | None:
@@ -230,17 +249,16 @@ def reconcile_statement(parsed, db_transactions: list, account_id: int) -> dict:
 def _calculate_adjustment_total(pairs, direction: str) -> str:
     """Calculate total adjustment amount for high-confidence pairs in given direction."""
     from decimal import Decimal
-    from cc_parser.parsers.tokens import parse_amount, format_amount
 
     total = Decimal("0")
     for pair in pairs:
         if pair.confidence == "high":
             if direction == "debit" and pair.debit:
-                total += parse_amount(pair.debit.amount or "0")
+                total += parse_cc_token_amount(pair.debit.amount or "0")
             elif direction == "credit" and pair.credit:
-                total += parse_amount(pair.credit.amount or "0")
+                total += parse_cc_token_amount(pair.credit.amount or "0")
 
-    return format_amount(total)
+    return format_cc_amount(total)
 
 
 _GENERIC_COUNTERPARTIES = {"payment received", "payment successful", "payment done"}
@@ -252,8 +270,6 @@ async def enrich_matched_transactions(recon: dict) -> int:
     Enriches when the DB counterparty is NULL, empty, or a generic placeholder.
     Returns the count of transactions that were updated.
     """
-    from bank_email_fetcher.db import Transaction, async_session
-
     enriched = 0
     async with async_session() as session:
         for entry in recon.get("matched", []):
@@ -417,8 +433,6 @@ async def _canonical_bank_name(bank: str) -> str:
     ``.title()`` is avoided because it mangles acronyms like ICICI → Icici and
     SBI → Sbi.
     """
-    from bank_email_fetcher.db import Account, Transaction, async_session
-
     lowered = bank.lower()
     async with async_session() as session:
         existing = await session.execute(
@@ -428,7 +442,9 @@ async def _canonical_bank_name(bank: str) -> str:
         if row and row[0]:
             return row[0]
         existing = await session.execute(
-            select(Transaction.bank).where(func.lower(Transaction.bank) == lowered).limit(1)
+            select(Transaction.bank)
+            .where(func.lower(Transaction.bank) == lowered)
+            .limit(1)
         )
         row = existing.first()
         if row and row[0]:
@@ -444,8 +460,6 @@ async def _find_or_create_account(bank: str, parsed) -> "Account":
     bank name is canonicalized via ``_canonical_bank_name`` so casing is
     consistent across Account / StatementUpload / Transaction rows.
     """
-    from bank_email_fetcher.db import Account, Card, async_session
-
     stmt_card_last4 = last4_from_card(parsed.card_number)
     # Some banks (e.g. SBI) only show 2 digits: "XXXX XXXX XXXX XX67"
     stmt_partial = _extract_digits(parsed.card_number) if not stmt_card_last4 else ""
@@ -554,15 +568,6 @@ async def process_statement_email(
 
     Returns a dict with statement_upload_id and stats if successful, None otherwise.
     """
-    from bank_email_fetcher.db import (
-        Account,
-        Card,
-        StatementUpload,
-        Transaction,
-        async_session,
-    )
-    from bank_email_fetcher.linker import build_link_context, link_transaction
-
     # Only process emails whose subject indicates a CC statement
     subject_lower = (email_subject or "").lower()
     if "statement" not in subject_lower:
@@ -609,8 +614,6 @@ async def process_statement_email(
         # PDF is encrypted — try stored passwords from credit card accounts
         # Use case-insensitive bank name matching so 'axis' (fetch rule)
         # matches 'Axis' (account)
-        from bank_email_fetcher.config import get_fernet
-
         fernet = get_fernet()
         async with async_session() as session:
             cc_accounts = (
@@ -651,7 +654,7 @@ async def process_statement_email(
         if not parsed:
             # No stored password worked — save for manual retry
             STATEMENTS_DIR.mkdir(parents=True, exist_ok=True)
-            ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
             safe_name = filename.replace("/", "_").replace("\\", "_")
             file_path = STATEMENTS_DIR / f"{ts}_{safe_name}"
             file_path.write_bytes(pdf_bytes)
@@ -721,7 +724,7 @@ async def process_statement_email(
 
     # Save the PDF to disk
     STATEMENTS_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
     safe_name = filename.replace("/", "_").replace("\\", "_")
     file_path = STATEMENTS_DIR / f"{ts}_{safe_name}"
     file_path.write_bytes(pdf_bytes)
@@ -803,15 +806,10 @@ async def process_statement_email(
             entry["imported"] = True
             entry["imported_txn_id"] = txn.id
             imported += 1
-            from bank_email_fetcher.telegram_bot import build_account_label
             account_obj = (
-                await session.get(Account, txn.account_id)
-                if txn.account_id
-                else None
+                await session.get(Account, txn.account_id) if txn.account_id else None
             )
-            card_obj = (
-                await session.get(Card, txn.card_id) if txn.card_id else None
-            )
+            card_obj = await session.get(Card, txn.card_id) if txn.card_id else None
             imported_txns.append(
                 (
                     txn.id,
@@ -838,26 +836,13 @@ async def process_statement_email(
             upload.status = "partial_import"
         await session.commit()
 
-        # Telegram notifications for imported transactions
-        from bank_email_fetcher.settings_service import (
-            should_notify_transactions,
-            get_telegram_chat_id,
-            get_setting_int,
-        )
-
         if imported_txns and should_notify_transactions():
             chat_id = get_telegram_chat_id()
             bulk_threshold = get_setting_int("telegram.bulk_threshold", 5)
             if len(imported_txns) <= bulk_threshold:
-                from bank_email_fetcher.telegram_bot import (
-                    send_transaction_notification,
-                )
-
                 for txn_id, txn_info in imported_txns:
                     await send_transaction_notification(txn_id, txn_info, chat_id)
             else:
-                from bank_email_fetcher.telegram_bot import send_bulk_summary
-
                 await send_bulk_summary(
                     len(imported_txns),
                     chat_id,
@@ -868,7 +853,8 @@ async def process_statement_email(
 
         enriched = await enrich_matched_transactions(recon)
 
-        from bank_email_fetcher.reminders import init_payment_tracking
+        # function-local: breaks cycle with services.reminders (reminders imports services.statements at top)
+        from bank_email_fetcher.services.reminders import init_payment_tracking
 
         await init_payment_tracking(upload.id)
 

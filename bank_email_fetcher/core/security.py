@@ -1,13 +1,4 @@
-"""HTTP Basic Auth for bank-email-fetcher.
-
-Enabled when AUTH_USERNAME and AUTH_PASSWORD are both set in the environment.
-When disabled, all requests pass through without authentication.
-
-Requests from IPs in AUTH_SKIP_CIDRS (e.g. Tailscale 100.64.0.0/10) bypass
-auth even when enabled. Note: this checks request.client.host (the direct
-peer IP), not X-Forwarded-For — only works when the app is accessed directly,
-not behind a reverse proxy.
-"""
+"""HTTP Basic Auth for bank-email-fetcher."""
 
 import ipaddress
 import secrets
@@ -53,11 +44,6 @@ def check_credentials(
     credentials: Optional[HTTPBasicCredentials],
     request: Optional[Request] = None,
 ) -> None:
-    """Validate HTTP Basic credentials against configured values.
-
-    No-op when auth is disabled or the client IP is in a trusted network.
-    Raises HTTPException(401) on failure.
-    """
     if not settings.auth_enabled:
         return
 

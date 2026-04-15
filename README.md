@@ -18,7 +18,7 @@ git clone https://github.com/AkhilNarang/bank-email-fetcher.git
 cd bank-email-fetcher
 mkdir -p data
 uv sync --no-dev
-uv run python seed.py   # generates .env with Fernet key + seeds fetch rules
+uv run python scripts/seed.py   # generates .env with Fernet key + seeds fetch rules
 uv run fastapi dev      # http://localhost:8000 (with auto-reload)
 ```
 
@@ -27,7 +27,7 @@ uv run fastapi dev      # http://localhost:8000 (with auto-reload)
 
 Once running:
 1. Add email sources at `/sources` (Gmail app password or Fastmail API token)
-2. Assign sources to rules at `/rules` (re-run `seed.py` after adding sources to auto-link)
+2. Assign sources to rules at `/rules` (re-run `scripts/seed.py` after adding sources to auto-link)
 3. Click "Poll Now" on the dashboard or wait for automatic polling every 15 minutes
 
 ## Configuration (.env)
@@ -69,7 +69,7 @@ Once running:
 - **Cards** are physical cards linked to an account. An account can have multiple cards (primary + addon cards). Each card has a `card_mask` (e.g. `XX2001`).
 - **Addon card support**: Multiple cards can be linked to a single credit card account (e.g. primary + spouse addon). The linker resolves transactions to the correct card and parent account.
 
-### Transaction-to-Account Linking (linker.py)
+### Transaction-to-Account Linking (`services/linker.py`)
 Every transaction is auto-linked to an Account (and optionally a Card) using a four-level lookup cascade:
 
 1. **card_mask -> cards table** — sets both `card_id` and `account_id`. Handles all mask formats (`XX2001`, `xx0298`, `XXXXXXX8669`, `4611 XXXX XXXX 2002`, `0567`, etc.) by extracting the last-4 digits.
@@ -107,29 +107,42 @@ Linking is performed inline during polling and in batch via the `relink_orphans(
 
 ```
 bank_email_fetcher/
-  app.py          # FastAPI application: all routes, lifespan, background poll loop
-  db.py           # SQLAlchemy models and async engine setup, schema migrations
-  fetcher.py      # Email fetching (Gmail IMAP, Fastmail JMAP) and parsing orchestration
-  statements.py   # CC statement parsing (cc-parser), reconciliation, enrichment
-  linker.py       # Transaction-to-account/card linking with preloaded lookup context
-  config.py       # Pydantic Settings (loads .env), Fernet key factory
-  crypto.py       # encrypt_credentials / decrypt_credentials helpers
+  main.py         # FastAPI app factory and lifespan wiring
+  api/            # JSON endpoints
+  web/
+    __init__.py   # Stable web router aggregation
+    dashboard.py / accounts.py / sources.py / rules.py / transactions.py
+    emails.py / statements.py / bank_statements.py / settings.py / polling.py
+    forms.py
+  services/       # Domain services
+    statements/   # CC + bank statement subpackage
+  schemas/        # Pydantic DTOs
+  integrations/   # Parser + email provider adapters
+  core/           # Shared templating, auth, crypto, date, and deps helpers
+  db/             # Engine/session setup, models, enums, init_db glue
   templates/      # Jinja2 HTML templates
   static/         # CSS, JS
   data/
     failed/       # Failed email spool (.eml files, auto-cleaned after 7 days)
     statements/   # Saved CC statement PDFs
+scripts/
+  main.py         # raw-email dev CLI
+  seed.py
+  populate.py
 ```
 
 ### Request Lifecycle
 
-1. FastAPI `lifespan` initializes the DB (runs `create_all` + inline column migrations) and starts the background `_poll_loop` asyncio task.
-2. On each poll tick (or manual trigger), `poll_all()` acquires `POLL_LOCK`, groups enabled rules by source, fetches emails in one connection per source, and processes each email:
-   - Tries `_process_email()` (bank-email-parser).
-   - On failure, tries `process_statement_email()` (cc-parser PDF path).
-   - Saves `Email` row and, if successful, `Transaction` row.
-   - Calls `link_transaction()` to set `account_id`/`card_id`.
-3. UI reads are simple SQLAlchemy `select()` queries against the async session.
+1. FastAPI `lifespan` in `bank_email_fetcher.main` initializes the DB, starts support services, and stores a shared `FetchService` on `app.state`.
+2. On each poll tick (or manual trigger), `FetchService.poll_all()` delegates to `integrations/email/orchestrator.py`.
+3. HTML routes are split by domain under `web/` and aggregated by `web/__init__.py`.
+4. Routes use `core.deps.get_session`, while supporting services live under `services/`.
+5. During email processing the app:
+    - Tries `_process_email()` (bank-email-parser).
+    - On failure, tries `process_statement_email()` (cc-parser PDF path).
+    - Saves `Email` row and, if successful, `Transaction` row.
+    - Calls `link_transaction()` to set `account_id`/`card_id`.
+6. JSON endpoints live under `api/`, while HTML routes render Jinja templates from `web/{domain}.py` and delegate to `services/`.
 
 ## Database Models
 
@@ -201,11 +214,11 @@ Manual upload (/statements):
 
 ## Seed Scripts
 
-### seed.py
+### scripts/seed.py
 Seeds all default fetch rules for supported banks. Safe to run multiple times (idempotent — skips rules that already exist by `(provider, sender, subject)`). After adding email sources via the web UI, re-running `seed.py` will also auto-assign `source_id` to any unlinked rules that match by provider.
 
 ```bash
-uv run python seed.py
+uv run python scripts/seed.py
 ```
 
 
@@ -221,9 +234,9 @@ All other routes are HTML (Jinja2 templates). Form submissions use POST + redire
 
 ## Dev Tools
 
-- `main.py` — CLI tool for listing/dumping emails from Gmail or Fastmail directly (independent of the web service, useful for debugging raw email content)
-- `populate.py` — Seed transactions from local `.eml` files in `data/` subdirectories (bulk import from saved email files)
-- `seed.py` — Seed fetch rules for all known bank senders (idempotent)
+- `scripts/main.py` — CLI tool for listing/dumping emails from Gmail or Fastmail directly
+- `scripts/populate.py` — Seed transactions from local `.eml` files in `data/`
+- `scripts/seed.py` — Seed fetch rules for all known bank senders (idempotent)
 
 ## Related Projects
 

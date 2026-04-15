@@ -30,8 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).parent / "data"
-DB_PATH = Path(__file__).parent / "data" / "bank_email_fetcher.db"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+DB_PATH = DATA_DIR / "bank_email_fetcher.db"
 
 KNOWN_BANKS = {
     "axis",

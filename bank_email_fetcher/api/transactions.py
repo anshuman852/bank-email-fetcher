@@ -1,0 +1,23 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bank_email_fetcher.core.deps import get_session
+from bank_email_fetcher.schemas.transactions import (
+    TransactionNoteResponse,
+    TransactionNoteUpdate,
+)
+from bank_email_fetcher.services.transactions import update_transaction_note
+
+router = APIRouter()
+
+
+@router.post("/transactions/{txn_id}/note", response_model=TransactionNoteResponse)
+async def update_note(
+    txn_id: int,
+    payload: TransactionNoteUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> TransactionNoteResponse:
+    ok, note = await update_transaction_note(session, txn_id, payload.note)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return TransactionNoteResponse(ok=True, note=note)

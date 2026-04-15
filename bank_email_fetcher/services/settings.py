@@ -12,9 +12,12 @@ refreshed on every write.
 import json
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Mapping
 
 from sqlalchemy import select
+
+from bank_email_fetcher.config import get_fernet
+from bank_email_fetcher.db import Setting, async_session
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +193,9 @@ def get_grouped_settings() -> dict[str, list[dict]]:
     return grouped
 
 
-def parse_form_updates(form: dict) -> tuple[dict[str, str], list[str]]:
+def parse_form_updates(
+    form: Mapping[object, object],
+) -> tuple[dict[str, str], list[str]]:
     """Parse and validate a settings form submission.
 
     Returns (updates, errors). If errors is non-empty, updates should not
@@ -236,8 +241,6 @@ def parse_form_updates(form: dict) -> tuple[dict[str, str], list[str]]:
 
 async def load_all_settings() -> dict[str, str]:
     """Read all rows from DB, merge with registry defaults, populate cache."""
-    from bank_email_fetcher.db import Setting, async_session
-
     async with async_session() as session:
         rows = (await session.execute(select(Setting))).scalars().all()
 
@@ -248,8 +251,6 @@ async def load_all_settings() -> dict[str, str]:
     for key in secrets_to_decrypt:
         if key in db_values and db_values[key]:
             try:
-                from bank_email_fetcher.config import get_fernet
-
                 db_values[key] = get_fernet().decrypt(db_values[key].encode()).decode()
             except Exception:
                 logger.error(
@@ -271,8 +272,6 @@ async def load_all_settings() -> dict[str, str]:
 
 async def save_settings(updates: dict[str, str]) -> set[str]:
     """Bulk upsert. Returns the set of keys whose values actually changed."""
-    from bank_email_fetcher.db import Setting, async_session
-
     fernet = None
     changed: dict[str, str] = {}
 
@@ -288,8 +287,6 @@ async def save_settings(updates: dict[str, str]) -> set[str]:
             defn = SETTINGS_REGISTRY.get(key)
             if defn and defn.secret and value:
                 if fernet is None:
-                    from bank_email_fetcher.config import get_fernet
-
                     fernet = get_fernet()
                 store_value = fernet.encrypt(value.encode()).decode()
 
@@ -309,20 +306,22 @@ async def save_settings(updates: dict[str, str]) -> set[str]:
 async def start_services() -> None:
     """Start services based on current settings. Idempotent."""
     if is_telegram_configured():
-        from bank_email_fetcher.telegram_bot import tg_app, init_telegram
+        # function-local: breaks cycle with services.telegram (telegram imports settings at top)
+        from bank_email_fetcher.services import telegram as telegram_service
 
-        if tg_app is None:
+        if telegram_service.tg_app is None:
             try:
-                await init_telegram(get_telegram_bot_token())
+                await telegram_service.init_telegram(get_telegram_bot_token())
             except Exception as e:
                 logger.warning("Telegram bot failed to start: %s", e)
 
 
 async def stop_services() -> None:
     """Stop all managed services."""
-    from bank_email_fetcher.telegram_bot import shutdown_telegram
+    # function-local: breaks cycle with services.telegram
+    from bank_email_fetcher.services import telegram as telegram_service
 
-    await shutdown_telegram()
+    await telegram_service.shutdown_telegram()
 
 
 async def restart_services() -> None:

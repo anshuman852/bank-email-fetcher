@@ -4,13 +4,13 @@ spool file has been evicted by the cleanup cron."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from bank_email_fetcher import fetcher as fetcher_module
 from bank_email_fetcher.db import Base, Email, EmailSource
+from bank_email_fetcher.integrations.email import body as fetcher_module
 
 
 @pytest.fixture
@@ -36,7 +36,12 @@ def spool_dir(monkeypatch, tmp_path):
 
 
 async def _make_email(
-    maker, *, provider: str, message_id: str, remote_id: str | None, source_id: int | None
+    maker,
+    *,
+    provider: str,
+    message_id: str,
+    remote_id: str | None,
+    source_id: int | None,
 ) -> Email:
     async with maker() as session:
         em = Email(
@@ -77,11 +82,10 @@ async def test_loads_from_spool_when_present(session_factory, spool_dir):
     )
     (spool_dir / "fastmail_msg-abc.eml").write_bytes(b"spooled content")
 
-    with patch.object(
-        fetcher_module, "_fetch_fastmail_single_sync"
-    ) as fastmail_fetch, patch.object(
-        fetcher_module, "_fetch_gmail_single_sync"
-    ) as gmail_fetch:
+    with (
+        patch.object(fetcher_module, "_fetch_fastmail_single_sync") as fastmail_fetch,
+        patch.object(fetcher_module, "_fetch_gmail_single_sync") as gmail_fetch,
+    ):
         raw, err = await fetcher_module.load_or_fetch_raw_email(em)
 
     assert raw == b"spooled content"
@@ -101,13 +105,16 @@ async def test_refetches_from_fastmail_when_spool_missing(session_factory, spool
         source_id=source_id,
     )
 
-    with patch.object(
-        fetcher_module, "decrypt_credentials", return_value={"token": "tok"}
-    ), patch.object(
-        fetcher_module,
-        "_fetch_fastmail_single_sync",
-        return_value=b"re-fetched bytes",
-    ) as fastmail_fetch:
+    with (
+        patch.object(
+            fetcher_module, "decrypt_credentials", return_value={"token": "tok"}
+        ),
+        patch.object(
+            fetcher_module,
+            "_fetch_fastmail_single_sync",
+            return_value=b"re-fetched bytes",
+        ) as fastmail_fetch,
+    ):
         raw, err = await fetcher_module.load_or_fetch_raw_email(em)
 
     assert raw == b"re-fetched bytes"
@@ -126,13 +133,16 @@ async def test_refetches_from_gmail_when_spool_missing(session_factory, spool_di
         source_id=source_id,
     )
 
-    with patch.object(
-        fetcher_module,
-        "decrypt_credentials",
-        return_value={"user": "u@example.com", "app_password": "pw"},
-    ), patch.object(
-        fetcher_module, "_fetch_gmail_single_sync", return_value=b"gmail bytes"
-    ) as gmail_fetch:
+    with (
+        patch.object(
+            fetcher_module,
+            "decrypt_credentials",
+            return_value={"user": "u@example.com", "app_password": "pw"},
+        ),
+        patch.object(
+            fetcher_module, "_fetch_gmail_single_sync", return_value=b"gmail bytes"
+        ) as gmail_fetch,
+    ):
         raw, err = await fetcher_module.load_or_fetch_raw_email(em)
 
     assert raw == b"gmail bytes"
@@ -168,10 +178,11 @@ async def test_error_when_provider_returns_nothing(session_factory, spool_dir):
         source_id=source_id,
     )
 
-    with patch.object(
-        fetcher_module, "decrypt_credentials", return_value={"token": "tok"}
-    ), patch.object(
-        fetcher_module, "_fetch_fastmail_single_sync", return_value=None
+    with (
+        patch.object(
+            fetcher_module, "decrypt_credentials", return_value={"token": "tok"}
+        ),
+        patch.object(fetcher_module, "_fetch_fastmail_single_sync", return_value=None),
     ):
         raw, err = await fetcher_module.load_or_fetch_raw_email(em)
 

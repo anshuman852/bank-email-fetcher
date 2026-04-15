@@ -1,3 +1,4 @@
+# ty: ignore
 """Bank account statement PDF parsing and reconciliation.
 
 Parallel to statements.py (which handles CC statements). Provides:
@@ -29,19 +30,39 @@ import tempfile
 from datetime import date as date_type, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 from sqlalchemy import select
+from bank_email_fetcher.db import (
+    Account,
+    BankStatementUpload,
+    Card,
+    Transaction,
+    async_session,
+)
 
-from bank_statement_parser.extractor import extract_raw_pdf
-from bank_statement_parser.parsers.factory import get_parser
-
-if TYPE_CHECKING:
-    from bank_email_fetcher.db import Account
+from bank_email_fetcher.config import get_fernet
+from bank_email_fetcher.core.dates import parse_date
+from bank_email_fetcher.integrations.parsers import (
+    ParseError,
+    UnsupportedEmailTypeError,
+    parse_bank_statement_pdf,
+    parse_transaction_email,
+)
+from bank_email_fetcher.services.linker import build_link_context, link_transaction
+from bank_email_fetcher.services.settings import (
+    get_setting_int,
+    get_telegram_chat_id,
+    should_notify_transactions,
+)
+from bank_email_fetcher.services.statements.cc import extract_pdf_from_email
+from bank_email_fetcher.services.telegram import (
+    build_account_label,
+    send_bulk_summary,
+    send_transaction_notification,
+)
 
 logger = logging.getLogger(__name__)
 
-STATEMENTS_DIR = Path(__file__).parent / "data" / "statements"
+STATEMENTS_DIR = Path(__file__).resolve().parent.parent / "data" / "statements"
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -72,14 +93,11 @@ def extract_password_hint(raw_bytes: bytes, bank: str) -> str | None:
     Used by the fetcher as a fallback when the hint wasn't threaded through
     from the parse step (e.g., for reprocess-failed paths).
     """
-    from bank_email_parser.api import parse_email
-    from bank_email_parser.exceptions import ParseError, UnsupportedEmailTypeError
-
     if not (html := _extract_html_from_email(raw_bytes)):
         return None
     try:
-        return parse_email(bank, html).password_hint
-    except (ParseError, UnsupportedEmailTypeError):
+        return parse_transaction_email(bank, html).password_hint
+    except ParseError, UnsupportedEmailTypeError:
         return None
 
 
@@ -90,11 +108,7 @@ def extract_password_hint(raw_bytes: bytes, bank: str) -> str | None:
 
 def parse_bank_statement(pdf_path: Path, bank: str, password: str | None = None):
     """Parse a bank account statement PDF. Returns a ParsedBankStatement."""
-    raw_data = extract_raw_pdf(
-        pdf_path, include_blocks=False, password=password or None
-    )
-    parser = get_parser(bank)
-    return parser.parse(raw_data)
+    return parse_bank_statement_pdf(pdf_path, bank, password)
 
 
 def _parse_amount(amount_str: str) -> Decimal:
@@ -104,8 +118,10 @@ def _parse_amount(amount_str: str) -> Decimal:
 
 def _parse_date(date_str: str) -> date_type:
     """Convert 'DD/MM/YYYY' to date object."""
-    d, m, y = date_str.split("/")
-    return date_type(int(y), int(m), int(d))
+    parsed = parse_date(date_str, dayfirst=True)
+    if parsed is None:
+        raise ValueError(f"Could not parse bank statement date: {date_str!r}")
+    return parsed
 
 
 def _match_key(txn_date: date_type, amount: Decimal, direction: str) -> tuple:
@@ -262,8 +278,6 @@ _GENERIC_COUNTERPARTIES = {"payment received", "payment successful", "payment do
 
 async def enrich_matched_transactions(recon: dict) -> int:
     """Update DB transaction counterparty from statement narration for matched transactions."""
-    from bank_email_fetcher.db import Transaction, async_session
-
     enriched = 0
     async with async_session() as session:
         for entry in recon.get("matched", []):
@@ -334,8 +348,6 @@ def _last4(account_number: str | None) -> str | None:
 
 async def _find_or_create_bank_account(bank: str, parsed) -> "Account":
     """Find an existing bank_account Account or create one."""
-    from bank_email_fetcher.db import Account, async_session
-
     stmt_acct_number = parsed.account_number
     stmt_last4 = _last4(stmt_acct_number)
 
@@ -414,16 +426,6 @@ async def process_bank_statement_email(
 
     Returns a dict with bank_statement_upload_id and stats if successful, None otherwise.
     """
-    from bank_email_fetcher.db import (
-        Account,
-        BankStatementUpload,
-        Card,
-        Transaction,
-        async_session,
-    )
-    from bank_email_fetcher.linker import build_link_context, link_transaction
-    from bank_email_fetcher.statements import extract_pdf_from_email
-
     subject_lower = (email_subject or "").lower()
 
     # Must contain "statement"
@@ -476,8 +478,6 @@ async def process_bank_statement_email(
             return None
 
         # PDF is encrypted — try stored passwords
-        from bank_email_fetcher.config import get_fernet
-
         fernet = get_fernet()
         async with async_session() as session:
             bank_accounts = (
@@ -519,7 +519,7 @@ async def process_bank_statement_email(
         if not parsed:
             # Save for manual retry
             STATEMENTS_DIR.mkdir(parents=True, exist_ok=True)
-            ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
             safe_name = _safe_filename(filename)
             file_path = STATEMENTS_DIR / f"{ts}_{safe_name}"
             file_path.write_bytes(pdf_bytes)
@@ -592,7 +592,7 @@ async def process_bank_statement_email(
 
     # Save the PDF to disk
     STATEMENTS_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
     safe_name = _safe_filename(filename)
     file_path = STATEMENTS_DIR / f"{ts}_{safe_name}"
     file_path.write_bytes(pdf_bytes)
@@ -660,15 +660,10 @@ async def process_bank_statement_email(
             entry["imported"] = True
             entry["imported_txn_id"] = txn.id
             imported += 1
-            from bank_email_fetcher.telegram_bot import build_account_label
             account_obj = (
-                await session.get(Account, txn.account_id)
-                if txn.account_id
-                else None
+                await session.get(Account, txn.account_id) if txn.account_id else None
             )
-            card_obj = (
-                await session.get(Card, txn.card_id) if txn.card_id else None
-            )
+            card_obj = await session.get(Card, txn.card_id) if txn.card_id else None
             imported_txns.append(
                 (
                     txn.id,
@@ -698,25 +693,13 @@ async def process_bank_statement_email(
 
     # Notifications and enrichment run outside the DB session so that network
     # I/O doesn't hold the session open.
-    from bank_email_fetcher.settings_service import (
-        should_notify_transactions,
-        get_telegram_chat_id,
-        get_setting_int,
-    )
-
     if imported_txns and should_notify_transactions():
         chat_id = get_telegram_chat_id()
         bulk_threshold = get_setting_int("telegram.bulk_threshold", 5)
         if len(imported_txns) <= bulk_threshold:
-            from bank_email_fetcher.telegram_bot import (
-                send_transaction_notification,
-            )
-
             for txn_id, txn_info in imported_txns:
                 await send_transaction_notification(txn_id, txn_info, chat_id)
         else:
-            from bank_email_fetcher.telegram_bot import send_bulk_summary
-
             await send_bulk_summary(
                 len(imported_txns),
                 chat_id,

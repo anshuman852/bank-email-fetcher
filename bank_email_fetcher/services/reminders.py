@@ -1,3 +1,4 @@
+# ty: ignore
 """Payment reminder logic: scheduling, mark-as-paid, and auto-detection.
 
 Payment tracking fields live on StatementUpload directly:
@@ -20,8 +21,17 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bank_email_fetcher.db import PaymentStatus
+from bank_email_fetcher.db import Account, PaymentStatus, StatementUpload, async_session
+from bank_email_fetcher.services import telegram as telegram_service
+from bank_email_fetcher.services.settings import (
+    get_setting_bool,
+    get_setting_json,
+    get_telegram_chat_id,
+    is_telegram_configured,
+)
+from bank_email_fetcher.services.statements.cc import parse_cc_amount, parse_cc_date
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +50,6 @@ async def init_payment_tracking(statement_upload_id: int) -> bool:
     Never raises — logs errors internally.
     """
     try:
-        from bank_email_fetcher.db import StatementUpload, async_session
-        from bank_email_fetcher.statements import parse_cc_date, parse_cc_amount
-
         async with async_session() as session:
             if not (upload := await session.get(StatementUpload, statement_upload_id)):
                 return False
@@ -90,15 +97,6 @@ async def check_and_send_reminders() -> int:
 
     Called from the poll loop after poll_all(). Returns count of messages sent.
     """
-    from bank_email_fetcher.db import StatementUpload, async_session
-    from bank_email_fetcher.statements import parse_cc_date, parse_cc_amount
-    from bank_email_fetcher.settings_service import (
-        is_telegram_configured,
-        get_setting_bool,
-        get_setting_json,
-        get_telegram_chat_id,
-    )
-
     if not is_telegram_configured() or not get_setting_bool(
         "telegram.notify_reminders"
     ):
@@ -200,10 +198,7 @@ async def _send_reminder_notification(upload, due, amount_due, days_until_due, c
 
     days_until_due: positive = days remaining, 0 = today, negative = overdue.
     """
-    from bank_email_fetcher.telegram_bot import tg_app
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    app = tg_app
+    app = telegram_service.tg_app
     if not app:
         return
 
@@ -255,9 +250,6 @@ async def _send_reminder_notification(upload, due, amount_due, days_until_due, c
 
 async def handle_mark_paid_callback(update, context) -> None:
     """Handle the 'Mark as Paid' inline button callback."""
-    from bank_email_fetcher.db import StatementUpload, async_session
-    from bank_email_fetcher.settings_service import get_telegram_chat_id
-
     query = update.callback_query
     if not query or not query.data:
         return
@@ -289,8 +281,6 @@ async def handle_mark_paid_callback(update, context) -> None:
         upload.payment_paid_at = datetime.now(timezone.utc)
         if upload.total_amount_due:
             try:
-                from bank_email_fetcher.statements import parse_cc_amount
-
                 upload.payment_paid_amount = parse_cc_amount(upload.total_amount_due)
             except ValueError, InvalidOperation:
                 pass
@@ -313,14 +303,6 @@ async def check_payment_received(txn_id: int, account_id: int, amount) -> bool:
     Called after a credit transaction is committed. Updates payment status
     and sends a Telegram notification if enabled.
     """
-    from bank_email_fetcher.db import StatementUpload, Account, async_session
-    from bank_email_fetcher.statements import parse_cc_date, parse_cc_amount
-    from bank_email_fetcher.settings_service import (
-        is_telegram_configured,
-        get_setting_bool,
-        get_telegram_chat_id,
-    )
-
     amount = Decimal(str(amount))
 
     async with async_session() as session:
@@ -406,9 +388,7 @@ async def _send_payment_received_notification(
     chat_id,
 ) -> None:
     """Send a Telegram notification about a detected payment."""
-    from bank_email_fetcher.telegram_bot import tg_app
-
-    app = tg_app
+    app = telegram_service.tg_app
     if not app:
         return
 

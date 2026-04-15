@@ -8,10 +8,10 @@ Env vars (or .env file):
     FASTMAIL_TOKEN      - Fastmail app password / API token (Bearer token for JMAP)
 
 Usage:
-    uv run main.py list gmail --from "noreply@slice.bank.in" --limit 10
-    uv run main.py list fastmail --from "credit_cards@icicibank.com" --limit 5
-    uv run main.py dump gmail 12345 12346
-    uv run main.py dump fastmail abc123 def456
+    uv run scripts/main.py list gmail --from "noreply@slice.bank.in" --limit 10
+    uv run scripts/main.py list fastmail --from "credit_cards@icicibank.com" --limit 5
+    uv run scripts/main.py dump gmail 12345 12346
+    uv run scripts/main.py dump fastmail abc123 def456
 """
 
 import argparse
@@ -58,12 +58,16 @@ def decode_header_value(raw: str | None) -> str:
     return " ".join(decoded)
 
 
-def _save_eml(provider: str, uid: str, raw: bytes, subfolder: str | None = None) -> None:
+def _save_eml(
+    provider: str, uid: str, raw: bytes, subfolder: str | None = None
+) -> None:
     out_dir = OUTPUT_DIR / subfolder if subfolder else OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     msg = email.message_from_bytes(raw)
     subject = decode_header_value(msg.get("Subject", "nosubject"))
-    safe_subject = "".join(c if c.isalnum() or c in " -_" else "_" for c in subject)[:60].strip()
+    safe_subject = "".join(c if c.isalnum() or c in " -_" else "_" for c in subject)[
+        :60
+    ].strip()
     filename = f"{provider}_{uid}_{safe_subject}.eml"
     path = out_dir / filename
     path.write_bytes(raw)
@@ -73,6 +77,7 @@ def _save_eml(provider: str, uid: str, raw: bytes, subfolder: str | None = None)
 # ---------------------------------------------------------------------------
 # Gmail (IMAP with UID commands)
 # ---------------------------------------------------------------------------
+
 
 def _gmail_connect() -> imaplib.IMAP4_SSL:
     if not settings.gmail_user or not settings.gmail_app_password.get_secret_value():
@@ -102,7 +107,7 @@ def _imap_search_criteria(args: argparse.Namespace) -> str:
     if args.subject:
         criteria.append(f'SUBJECT "{args.subject}"')
     if args.since:
-        criteria.append(f'SINCE {args.since}')
+        criteria.append(f"SINCE {args.since}")
     return " ".join(criteria) if criteria else "ALL"
 
 
@@ -124,7 +129,7 @@ def gmail_list(args: argparse.Namespace) -> None:
         conn.logout()
         return
 
-    uids = data[0].split()[-args.limit:]
+    uids = data[0].split()[-args.limit :]
 
     table = Table(title=f"gmail - {len(uids)} emails")
     table.add_column("UID", style="cyan")
@@ -133,7 +138,9 @@ def gmail_list(args: argparse.Namespace) -> None:
     table.add_column("Subject", style="bold")
 
     for uid in uids:
-        typ, msg_data = conn.uid("FETCH", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+        typ, msg_data = conn.uid(
+            "FETCH", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])"
+        )
         if typ != "OK" or not msg_data or not msg_data[0]:
             continue
         msg = email.message_from_bytes(msg_data[0][1])
@@ -173,7 +180,9 @@ JMAP_SESSION_URL = "https://api.fastmail.com/jmap/session"
 def _jmap_request(token: str, url: str, body: dict | None = None) -> dict:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if body:
-        req = Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+        req = Request(
+            url, data=json.dumps(body).encode(), headers=headers, method="POST"
+        )
     else:
         req = Request(url, headers=headers)
     try:
@@ -200,20 +209,30 @@ def _fastmail_session() -> tuple[str, str, str]:
     return token, api_url, account_id
 
 
-def _resolve_mailbox_id(token: str, api_url: str, account_id: str, folder_name: str) -> str | None:
+def _resolve_mailbox_id(
+    token: str, api_url: str, account_id: str, folder_name: str
+) -> str | None:
     """Look up a JMAP mailbox ID by folder name."""
     body = {
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
         "methodCalls": [
-            ["Mailbox/query", {
-                "accountId": account_id,
-                "filter": {"name": folder_name},
-            }, "0"],
-            ["Mailbox/get", {
-                "accountId": account_id,
-                "#ids": {"resultOf": "0", "name": "Mailbox/query", "path": "/ids"},
-                "properties": ["id", "name"],
-            }, "1"],
+            [
+                "Mailbox/query",
+                {
+                    "accountId": account_id,
+                    "filter": {"name": folder_name},
+                },
+                "0",
+            ],
+            [
+                "Mailbox/get",
+                {
+                    "accountId": account_id,
+                    "#ids": {"resultOf": "0", "name": "Mailbox/query", "path": "/ids"},
+                    "properties": ["id", "name"],
+                },
+                "1",
+            ],
         ],
     }
     result = _jmap_request(token, api_url, body)
@@ -253,17 +272,25 @@ def fastmail_list(args: argparse.Namespace) -> None:
     body = {
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
         "methodCalls": [
-            ["Email/query", {
-                "accountId": account_id,
-                "filter": jmap_filter,
-                "sort": [{"property": "receivedAt", "isAscending": False}],
-                "limit": args.limit,
-            }, "0"],
-            ["Email/get", {
-                "accountId": account_id,
-                "#ids": {"resultOf": "0", "name": "Email/query", "path": "/ids"},
-                "properties": ["id", "receivedAt", "from", "subject"],
-            }, "1"],
+            [
+                "Email/query",
+                {
+                    "accountId": account_id,
+                    "filter": jmap_filter,
+                    "sort": [{"property": "receivedAt", "isAscending": False}],
+                    "limit": args.limit,
+                },
+                "0",
+            ],
+            [
+                "Email/get",
+                {
+                    "accountId": account_id,
+                    "#ids": {"resultOf": "0", "name": "Email/query", "path": "/ids"},
+                    "properties": ["id", "receivedAt", "from", "subject"],
+                },
+                "1",
+            ],
         ],
     }
 
@@ -298,11 +325,15 @@ def fastmail_dump(args: argparse.Namespace) -> None:
     body = {
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
         "methodCalls": [
-            ["Email/get", {
-                "accountId": account_id,
-                "ids": args.uids,
-                "properties": ["blobId", "subject"],
-            }, "0"],
+            [
+                "Email/get",
+                {
+                    "accountId": account_id,
+                    "ids": args.uids,
+                    "properties": ["blobId", "subject"],
+                },
+                "0",
+            ],
         ],
     }
     result = _jmap_request(token, api_url, body)
@@ -318,8 +349,7 @@ def fastmail_dump(args: argparse.Namespace) -> None:
 
     for em in emails:
         blob_url = (
-            download_url
-            .replace("{accountId}", account_id)
+            download_url.replace("{accountId}", account_id)
             .replace("{blobId}", em["blobId"])
             .replace("{type}", "application/octet-stream")
             .replace("{name}", "email.eml")
@@ -334,6 +364,7 @@ def fastmail_dump(args: argparse.Namespace) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def cmd_list(args: argparse.Namespace) -> None:
     {"gmail": gmail_list, "fastmail": fastmail_list}[args.provider](args)
 
@@ -343,23 +374,40 @@ def cmd_dump(args: argparse.Namespace) -> None:
 
 
 def app() -> None:
-    parser = argparse.ArgumentParser(description="Fetch and dump bank emails for parser development")
+    parser = argparse.ArgumentParser(
+        description="Fetch and dump bank emails for parser development"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     ls = sub.add_parser("list", aliases=["ls"], help="List emails matching criteria")
     ls.add_argument("provider", choices=PROVIDERS)
-    ls.add_argument("--from", dest="sender", nargs="+", help="Filter by sender (substring match, multiple OK)")
+    ls.add_argument(
+        "--from",
+        dest="sender",
+        nargs="+",
+        help="Filter by sender (substring match, multiple OK)",
+    )
     ls.add_argument("--subject", help="Filter by subject")
-    ls.add_argument("--since", help="Gmail: 01-Mar-2026, Fastmail: 2026-03-01T00:00:00Z")
-    ls.add_argument("--limit", type=int, default=50, help="Max emails to show (default: 50)")
+    ls.add_argument(
+        "--since", help="Gmail: 01-Mar-2026, Fastmail: 2026-03-01T00:00:00Z"
+    )
+    ls.add_argument(
+        "--limit", type=int, default=50, help="Max emails to show (default: 50)"
+    )
     ls.add_argument("--folder", help="Gmail IMAP folder (default: [Gmail]/All Mail)")
     ls.set_defaults(func=cmd_list)
 
     dm = sub.add_parser("dump", help="Dump specific emails as .eml files")
     dm.add_argument("provider", choices=PROVIDERS)
-    dm.add_argument("uids", nargs="+", help="Gmail: IMAP UIDs, Fastmail: JMAP email IDs")
+    dm.add_argument(
+        "uids", nargs="+", help="Gmail: IMAP UIDs, Fastmail: JMAP email IDs"
+    )
     dm.add_argument("--folder", help="Gmail IMAP folder (default: [Gmail]/All Mail)")
-    dm.add_argument("--output", dest="output_folder", help="Subfolder under data/ (e.g. --output hdfc → data/hdfc/)")
+    dm.add_argument(
+        "--output",
+        dest="output_folder",
+        help="Subfolder under data/ (e.g. --output hdfc → data/hdfc/)",
+    )
     dm.set_defaults(func=cmd_dump)
 
     args = parser.parse_args()

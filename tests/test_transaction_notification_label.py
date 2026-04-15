@@ -20,8 +20,8 @@ from sqlalchemy.exc import MissingGreenlet
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bank_email_fetcher.db import Account, Base, Card, Transaction
-from bank_email_fetcher.linker import build_link_context, link_transaction
-from bank_email_fetcher.telegram_bot import build_account_label
+from bank_email_fetcher.services.linker import build_link_context, link_transaction
+from bank_email_fetcher.services.telegram import build_account_label
 
 
 @pytest.fixture
@@ -96,9 +96,7 @@ async def test_notification_label_uses_session_get(session):
     link_transaction(link_ctx, txn)
     await session.flush()
 
-    account_obj = (
-        await session.get(Account, txn.account_id) if txn.account_id else None
-    )
+    account_obj = await session.get(Account, txn.account_id) if txn.account_id else None
     card_obj = await session.get(Card, txn.card_id) if txn.card_id else None
 
     assert account_obj is account
@@ -128,9 +126,7 @@ async def test_notification_label_handles_unlinked_transaction(session):
     assert txn.account_id is None
     assert txn.card_id is None
 
-    account_obj = (
-        await session.get(Account, txn.account_id) if txn.account_id else None
-    )
+    account_obj = await session.get(Account, txn.account_id) if txn.account_id else None
     card_obj = await session.get(Card, txn.card_id) if txn.card_id else None
 
     assert account_obj is None

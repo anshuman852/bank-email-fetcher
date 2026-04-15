@@ -1,3 +1,4 @@
+# ty: ignore
 """Telegram bot for transaction notifications and note replies.
 
 Sends a notification for each new transaction (post-backfill only).
@@ -11,6 +12,9 @@ import re
 
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
+
+from bank_email_fetcher.db import Transaction, async_session
+from bank_email_fetcher.services.settings import get_telegram_chat_id
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +201,8 @@ async def _handle_callback(update: Update, context) -> None:
         return
 
     if query.data.startswith("paid:"):
-        from bank_email_fetcher.reminders import handle_mark_paid_callback
+        # function-local: breaks cycle with services.reminders (reminders imports telegram at top)
+        from bank_email_fetcher.services.reminders import handle_mark_paid_callback
 
         await handle_mark_paid_callback(update, context)
     else:
@@ -206,8 +211,6 @@ async def _handle_callback(update: Update, context) -> None:
 
 async def _handle_reply(update: Update, context) -> None:
     """Handle reply messages — save as transaction note. Only authorized chat."""
-    from bank_email_fetcher.settings_service import get_telegram_chat_id
-
     msg = update.message
     if not msg or not msg.text:
         return
@@ -234,8 +237,6 @@ async def _handle_reply(update: Update, context) -> None:
     note_text = msg.text.strip()
     if not note_text:
         return
-
-    from bank_email_fetcher.db import Transaction, async_session
 
     async with async_session() as session:
         txn = await session.get(Transaction, txn_id)

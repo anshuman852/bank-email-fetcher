@@ -118,7 +118,7 @@ async function testSource(id, el) {
         } else {
             el.textContent = "Failed";
             el.style.color = "var(--danger)";
-            el.title = data.error || "Unknown error";
+            el.title = data.error || data.detail || "Unknown error";
         }
     } catch (e) {
         el.textContent = "Error";

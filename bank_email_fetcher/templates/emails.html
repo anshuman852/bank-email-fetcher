@@ -196,7 +196,7 @@ async function reparseEmail(btn, emailId) {
         } else {
             btn.disabled = false;
             btn.textContent = 'Reparse';
-            alert('Reparse failed: ' + (data.error || 'Unknown error'));
+            alert('Reparse failed: ' + (data.error || data.detail || 'Unknown error'));
         }
     } catch (e) {
         btn.disabled = false;
@@ -220,7 +220,7 @@ async function reparseAllFailed(btn) {
         } else {
             btn.disabled = false;
             btn.innerHTML = origHTML;
-            alert('Bulk reparse failed: ' + (data.error || 'Unknown error'));
+            alert('Bulk reparse failed: ' + (data.error || data.detail || 'Unknown error'));
         }
     } catch (e) {
         btn.disabled = false;
