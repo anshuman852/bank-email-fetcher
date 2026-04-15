@@ -576,8 +576,12 @@ async def process_statement_email(
             email_subject[:80] if email_subject else "",
         )
         return None
-    # Reject savings/bank account statements (e.g. "Your Account Statement for the month of …")
-    if "account statement" in subject_lower and "card" not in subject_lower:
+    # Reject bank/savings statements — CC subjects mention "card".
+    if (
+        "account statement" in subject_lower
+        or "bank statement" in subject_lower
+        or "savings statement" in subject_lower
+    ) and "card" not in subject_lower:
         logger.debug(
             "Skipping bank account statement (not CC): %r",
             email_subject[:80] if email_subject else "",
