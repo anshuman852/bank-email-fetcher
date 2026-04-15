@@ -333,9 +333,9 @@ async def reparse_email(
         if em:
             em.error = error
             await session.commit()
-        return ReparseEmailResponse(
-            ok=False,
-            error=error or "Parsing failed (no transaction or statement found)",
+        raise HTTPException(
+            status_code=422,
+            detail=error or "Parsing failed (no transaction or statement found)",
         )
 
     # Success — update the email row and create transaction if needed
@@ -376,6 +376,7 @@ async def reparse_email(
                 )
 
         txn_id = None
+        duplicate_error: str | None = None
         if txn_data:
             try:
                 async with session.begin_nested():
@@ -403,7 +404,10 @@ async def reparse_email(
             except IntegrityError:
                 em.status = "skipped"
                 em.error = "Duplicate transaction skipped because an identical transaction row already exists"
-                return ReparseEmailResponse(ok=False, error=em.error)
+                duplicate_error = em.error
+
+    if duplicate_error:
+        raise HTTPException(status_code=409, detail=duplicate_error)
 
     # Send Telegram notification for the new transaction
     if txn_id and txn_data and should_notify_transactions():
@@ -421,9 +425,7 @@ async def reparse_email(
         stmt_kind = "Bank" if stmt_result.get("bank_statement_upload_id") else "CC"
         msg = f"{stmt_kind} statement re-processed (matched={stmt_result.get('matched', 0)}, imported={stmt_result.get('imported', 0)})"
     logger.info("Reparse of email %d succeeded: %s", email_id, msg)
-    return ReparseEmailResponse(
-        ok=True, message=msg, new_status="parsed", txn_id=txn_id
-    )
+    return ReparseEmailResponse(message=msg, new_status="parsed", txn_id=txn_id)
 
 
 @router.post("/emails/reparse-all-failed", response_model=ReparseAllFailedResponse)
@@ -531,7 +533,6 @@ async def reparse_all_failed(
             succeeded += 1
 
     return ReparseAllFailedResponse(
-        ok=True,
         succeeded=succeeded,
         skipped=skipped,
         failed=still_failed,

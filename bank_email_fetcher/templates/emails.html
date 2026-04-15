@@ -180,15 +180,13 @@ async function reparseEmail(btn, emailId) {
     btn.textContent = 'Reparsing…';
     try {
         const resp = await fetch(`/emails/${emailId}/reparse`, { method: 'POST' });
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         const row = btn.closest('tr');
-        if (data.ok) {
-            // Update status badge in this row
+        if (resp.ok) {
             const statusCell = row.querySelector('td:nth-child(5)');
             if (statusCell) {
                 statusCell.innerHTML = '<span class="badge success">parsed</span>';
             }
-            // Replace actions cell with a dash
             const actionsCell = btn.closest('td');
             if (actionsCell) {
                 actionsCell.innerHTML = '<span class="text-muted">&mdash;</span>';
@@ -196,7 +194,7 @@ async function reparseEmail(btn, emailId) {
         } else {
             btn.disabled = false;
             btn.textContent = 'Reparse';
-            alert('Reparse failed: ' + (data.error || data.detail || 'Unknown error'));
+            alert('Reparse failed: ' + (data.detail || `HTTP ${resp.status}`));
         }
     } catch (e) {
         btn.disabled = false;
@@ -211,8 +209,8 @@ async function reparseAllFailed(btn) {
     btn.textContent = 'Reparsing all…';
     try {
         const resp = await fetch('/emails/reparse-all-failed', { method: 'POST' });
-        const data = await resp.json();
-        if (data.ok) {
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) {
             const skippedPart = data.skipped ? `, ${data.skipped} skipped (duplicates)` : '';
             btn.textContent = `Done: ${data.succeeded} succeeded${skippedPart}, ${data.failed} still failed`;
             btn.style.opacity = '0.6';
@@ -220,7 +218,7 @@ async function reparseAllFailed(btn) {
         } else {
             btn.disabled = false;
             btn.innerHTML = origHTML;
-            alert('Bulk reparse failed: ' + (data.error || data.detail || 'Unknown error'));
+            alert('Bulk reparse failed: ' + (data.detail || `HTTP ${resp.status}`));
         }
     } catch (e) {
         btn.disabled = false;

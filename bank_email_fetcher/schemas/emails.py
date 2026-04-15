@@ -4,15 +4,12 @@ from pydantic import BaseModel
 
 
 class ReparseEmailResponse(BaseModel):
-    ok: bool
-    error: str | None = None
-    message: str | None = None
-    new_status: str | None = None
+    message: str
+    new_status: str
     txn_id: int | None = None
 
 
 class ReparseAllFailedResponse(BaseModel):
-    ok: bool
     succeeded: int
     skipped: int
     failed: int
