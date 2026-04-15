@@ -227,8 +227,13 @@ async def _send_reminder_notification(upload, due, amount_due, days_until_due, c
             header = "Payment Due"
             date_line = f"\u20b9{amount_str} due {due_str} ({time_str})"
 
+        if bank and account_label.upper().startswith(f"{bank} "):
+            title_suffix = account_label
+        else:
+            title_suffix = f"{bank} {account_label}".strip()
+
         lines = [
-            f"{emoji} <b>{header}</b> \u2014 {bank} {account_label}",
+            f"{emoji} <b>{header}</b> \u2014 {title_suffix}",
             date_line,
         ]
 
