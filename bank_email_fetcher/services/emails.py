@@ -77,6 +77,13 @@ def _process_email(
 
     if (txn := parsed.transaction) is None:
         return None, None, parsed.password_hint
+
+    transaction_date = txn.transaction_date
+    if transaction_date is None:
+        received_at = _parse_email_date(raw_bytes)
+        if received_at is not None:
+            transaction_date = received_at.date()
+
     return (
         None,
         {
@@ -85,7 +92,7 @@ def _process_email(
             "direction": txn.direction,
             "amount": float(txn.amount.amount),
             "currency": txn.amount.currency,
-            "transaction_date": txn.transaction_date,
+            "transaction_date": transaction_date,
             "transaction_time": txn.transaction_time,
             "counterparty": txn.counterparty,
             "card_mask": txn.card_mask,
